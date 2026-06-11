@@ -37,16 +37,19 @@ export class DaemonConnection {
     this.ws = ws;
 
     ws.on("open", () => {
+      console.error(`[raftbot] connected to ${this.serverUrl}`);
       this.reconnectDelayMs = 1000;
       this.onOpen();
     });
 
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
+      if (msg.type !== "ping") console.error(`[raftbot] received ${msg.type}`);
       this.onMessage(msg);
     });
 
     ws.on("close", () => {
+      console.error("[raftbot] disconnected");
       this.onClose();
       if (!this.shouldConnect) return;
       const delay = this.reconnectDelayMs;
@@ -61,10 +64,11 @@ export class DaemonConnection {
 }
 
 export function readyMessage(options = {}) {
+  const runtimeId = options.runtimeId ?? "raftbot";
   return {
     type: "ready",
     capabilities: ["agent:start", "agent:stop", "agent:deliver"],
-    runtimes: ["raftbot"],
+    runtimes: [runtimeId],
     runningAgents: [],
     hostname: options.hostname ?? os.hostname(),
     os: options.os ?? `${os.platform()} ${os.arch()}`,

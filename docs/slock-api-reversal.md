@@ -121,6 +121,7 @@ RaftBot MVP 只需要支持：
 - `agent:stop`
 - `agent:deliver`
 - `ping`
+- `machine:runtime_models:detect`
 
 可选支持：
 
@@ -221,6 +222,44 @@ RaftBot MVP 需要发送：
 - `agent:status`
 - `agent:activity`
 - `agent:deliver:ack`
+- `machine:runtime_models:result`
+
+## Runtime model detect
+
+RaftBot 可以把 runtime id 映射成 bot package id：
+
+```text
+raftbot-prod-db-operator
+```
+
+收到：
+
+```json
+{
+  "type": "machine:runtime_models:detect",
+  "requestId": "req_123",
+  "runtime": "raftbot-prod-db-operator"
+}
+```
+
+返回：
+
+```json
+{
+  "type": "machine:runtime_models:result",
+  "requestId": "req_123",
+  "models": [
+    {
+      "id": "default",
+      "label": "Production Database Operator",
+      "verified": true
+    }
+  ],
+  "default": "default"
+}
+```
+
+验证结果：Server 会调用这个 detect，并且 UI 能显示 daemon 返回的 model。若 runtime 仍无法选择，问题在 runtime installed/available gating，不在 model detect 链路。
 
 ## 发送聊天消息
 

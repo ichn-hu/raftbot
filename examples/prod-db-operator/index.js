@@ -57,7 +57,7 @@ bot.command("reject", async (ctx) => {
 await bot.start(options);
 
 function split(value = "") {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return typeof value === "string" ? value.split(",").map((item) => item.trim()).filter(Boolean) : [];
 }
 
 function createRequest(ctx, sql, status, decidedBy) {

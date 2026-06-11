@@ -1,9 +1,12 @@
 import { DaemonConnection, readyMessage } from "./daemon-connection.js";
+import { AgentApiClient } from "./agent-api.js";
 
 export function createBot() {
   const commands = new Map();
   let activeAgentId = null;
   let connection = null;
+  let agentApi = null;
+  let runtimeLabel = "RaftBot";
 
   const bot = {
     command(name, handler) {
@@ -12,11 +15,19 @@ export function createBot() {
     },
 
     async start(options) {
+      runtimeLabel = options.runtimeLabel ?? options.runtimeId ?? "RaftBot";
+      agentApi = new AgentApiClient({
+        serverUrl: options.serverUrl,
+        apiKey: options.apiKey
+      });
       connection = new DaemonConnection({
         serverUrl: options.serverUrl,
         apiKey: options.apiKey,
         onOpen: () => {
-          connection.send(readyMessage({ daemonVersion: options.daemonVersion }));
+          connection.send(readyMessage({
+            daemonVersion: options.daemonVersion,
+            runtimeId: options.runtimeId
+          }));
         },
         onMessage: (msg) => {
           void handleDaemonMessage(msg);
@@ -42,6 +53,14 @@ export function createBot() {
         break;
       case "agent:deliver":
         await handleDelivery(msg);
+        break;
+      case "machine:runtime_models:detect":
+        connection.send({
+          type: "machine:runtime_models:result",
+          requestId: msg.requestId,
+          models: [{ id: "default", label: botLabel(msg.runtime, runtimeLabel), verified: true }],
+          default: "default"
+        });
         break;
       default:
         break;
@@ -72,13 +91,7 @@ export function createBot() {
       command: parsed.name,
       args: parsed.args,
       async reply(text) {
-        connection.send({
-          type: "agent:activity",
-          agentId: msg.agentId,
-          activity: "message",
-          detail: text,
-          launchId: msg.launchId
-        });
+        await agentApi.sendMessage(msg.agentId, event.replyTarget, text);
       }
     };
   }
@@ -95,6 +108,10 @@ export function createBot() {
   return bot;
 }
 
+function botLabel(runtime, fallback) {
+  return runtime && runtime !== "raftbot" ? runtime : fallback;
+}
+
 function normalizeCommand(name) {
   return name.replace(/^\//, "").trim().toLowerCase();
 }
@@ -103,10 +120,32 @@ function normalizeMessageEvent(msg) {
   const message = msg.message ?? {};
   return {
     id: message.message_id ?? "",
-    target: message.target ?? message.channel_name ?? "",
+    target: formatTarget(message),
+    replyTarget: formatReplyTarget(message),
     sender: message.sender_name ? `@${message.sender_name}` : "",
     text: message.content ?? ""
   };
+}
+
+function formatTarget(message) {
+  if (message.target) return message.target;
+  if (message.channel_type === "dm") return `dm:@${message.channel_name}`;
+  if (message.channel_name) return `#${message.channel_name}`;
+  return "";
+}
+
+function formatReplyTarget(message) {
+  if (message.reply_target) return message.reply_target;
+  if (message.thread_short_id && message.channel_name) {
+    const base = message.channel_type === "dm" ? `dm:@${message.channel_name}` : `#${message.channel_name}`;
+    return `${base}:${message.thread_short_id}`;
+  }
+  if (message.thread_id && message.channel_name) {
+    const base = message.channel_type === "dm" ? `dm:@${message.channel_name}` : `#${message.channel_name}`;
+    return `${base}:${String(message.thread_id).slice(0, 8)}`;
+  }
+  const base = formatTarget(message);
+  return message.message_id && base && !base.includes(":") ? `${base}:${message.message_id.slice(0, 8)}` : base;
 }
 
 export function parseSlashCommand(text) {
