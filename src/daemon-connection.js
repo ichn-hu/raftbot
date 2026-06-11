@@ -26,6 +26,7 @@ export class DaemonConnection {
   send(message) {
     const payload = JSON.stringify(message);
     if (this.ws?.readyState === WebSocket.OPEN) {
+      if (message.type !== "pong") console.error(`[raftbot] send ${message.type}`);
       this.ws.send(payload);
     }
   }

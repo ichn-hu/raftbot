@@ -3,7 +3,7 @@ import { AgentApiClient } from "./agent-api.js";
 
 export function createBot() {
   const commands = new Map();
-  let activeAgentId = null;
+  const agents = new Map();
   let connection = null;
   let agentApi = null;
   let runtimeLabel = "RaftBot";
@@ -46,16 +46,24 @@ export function createBot() {
         connection.send({ type: "pong" });
         break;
       case "agent:start":
-        activeAgentId = msg.agentId;
+        agents.set(msg.agentId, {
+          launchId: msg.launchId,
+          activity: "online",
+          detail: "RaftBot ready",
+          clientSeq: 1
+        });
         connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
-        connection.send({ type: "agent:activity", agentId: msg.agentId, activity: "online", detail: "RaftBot ready", launchId: msg.launchId });
+        sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
         break;
       case "agent:stop":
-        if (msg.agentId === activeAgentId) activeAgentId = null;
+        agents.delete(msg.agentId);
         connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
         break;
       case "agent:deliver":
         await handleDelivery(msg);
+        break;
+      case "agent:activity_probe":
+        respondToActivityProbe(msg.agentId, msg.probeId);
         break;
       case "machine:runtime_models:detect":
         connection.send({
@@ -71,6 +79,7 @@ export function createBot() {
   }
 
   async function handleDelivery(msg) {
+    sendActivity(msg.agentId, "working", "Message received", msg.launchId);
     const event = normalizeMessageEvent(msg);
     const parsed = parseSlashCommand(event.text);
     if (!parsed) {
@@ -84,6 +93,7 @@ export function createBot() {
     }
     const ctx = createContext(msg, event, parsed);
     await handler(ctx);
+    sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
     ackDelivery(msg);
   }
 
@@ -105,6 +115,46 @@ export function createBot() {
       agentId: msg.agentId,
       seq: msg.seq > 0 ? msg.seq : msg.message?.seq ?? 0,
       deliveryId: msg.deliveryId
+    });
+  }
+
+  function respondToActivityProbe(agentId, probeId) {
+    const state = agents.get(agentId);
+    if (!state) {
+      connection.send({
+        type: "agent:activity",
+        agentId,
+        activity: "offline",
+        detail: "Agent not running",
+        probeId
+      });
+      return;
+    }
+    connection.send({
+      type: "agent:activity",
+      agentId,
+      activity: state.activity,
+      detail: state.detail,
+      launchId: state.launchId,
+      probeId,
+      clientSeq: state.clientSeq++
+    });
+  }
+
+  function sendActivity(agentId, activity, detail, launchId) {
+    const state = agents.get(agentId);
+    if (state) {
+      state.activity = activity;
+      state.detail = detail;
+      if (launchId) state.launchId = launchId;
+    }
+    connection.send({
+      type: "agent:activity",
+      agentId,
+      activity,
+      detail,
+      launchId: launchId || state?.launchId || void 0,
+      clientSeq: state ? state.clientSeq++ : void 0
     });
   }
 
