@@ -7,6 +7,7 @@ export function createBot() {
   let connection = null;
   let agentApi = null;
   let runtimeLabel = "RaftBot";
+  let modelId = "default";
 
   const bot = {
     command(name, handler) {
@@ -16,6 +17,7 @@ export function createBot() {
 
     async start(options) {
       runtimeLabel = options.runtimeLabel ?? options.runtimeId ?? "RaftBot";
+      modelId = options.modelId ?? "default";
       agentApi = new AgentApiClient({
         serverUrl: options.serverUrl,
         apiKey: options.apiKey
@@ -59,8 +61,8 @@ export function createBot() {
         connection.send({
           type: "machine:runtime_models:result",
           requestId: msg.requestId,
-          models: [{ id: options.modelId ?? "default", label: runtimeLabel, verified: true }],
-          default: options.modelId ?? "default"
+          models: [{ id: modelId, label: runtimeLabel, verified: true }],
+          default: modelId
         });
         break;
       default:
