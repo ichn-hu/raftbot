@@ -75,9 +75,31 @@ export function createBot() {
           messageId: msg.message?.message_id,
           sender: msg.message?.sender_name,
           channelType: msg.message?.channel_type,
-          channelName: msg.message?.channel_name
+          channelName: msg.message?.channel_name,
+          parentChannelType: msg.message?.parent_channel_type,
+          parentChannelName: msg.message?.parent_channel_name
         });
         await handleDelivery(msg);
+        break;
+      case "agent:workspace:list":
+        log("agent.workspace.list", { agentId: msg.agentId, dirPath: msg.dirPath });
+        connection.send({
+          type: "agent:workspace:file_tree",
+          agentId: msg.agentId,
+          files: [],
+          dirPath: msg.dirPath
+        });
+        break;
+      case "agent:workspace:read":
+        log("agent.workspace.read", { agentId: msg.agentId, path: msg.path, requestId: msg.requestId });
+        connection.send({
+          type: "agent:workspace:file_content",
+          agentId: msg.agentId,
+          requestId: msg.requestId,
+          content: null,
+          binary: false,
+          size: 0
+        });
         break;
       case "agent:activity_probe":
         respondToActivityProbe(msg.agentId, msg.probeId);
@@ -245,6 +267,11 @@ function normalizeMessageEvent(msg) {
 
 function formatTarget(message) {
   if (message.target) return message.target;
+  if (message.channel_type === "thread" && message.parent_channel_name) {
+    const shortId = getMessageShortId(message.channel_name);
+    if (message.parent_channel_type === "dm") return `dm:@${message.parent_channel_name}:${shortId}`;
+    return `#${message.parent_channel_name}:${shortId}`;
+  }
   if (message.channel_type === "dm") return `dm:@${message.channel_name}`;
   if (message.channel_name) return `#${message.channel_name}`;
   return "";
@@ -252,6 +279,7 @@ function formatTarget(message) {
 
 function formatReplyTarget(message) {
   if (message.reply_target) return message.reply_target;
+  if (message.channel_type === "thread") return formatTarget(message);
   if (message.thread_short_id && message.channel_name) {
     const base = message.channel_type === "dm" ? `dm:@${message.channel_name}` : `#${message.channel_name}`;
     return `${base}:${message.thread_short_id}`;
@@ -262,6 +290,11 @@ function formatReplyTarget(message) {
   }
   const base = formatTarget(message);
   return message.message_id && base && !base.includes(":") ? `${base}:${message.message_id.slice(0, 8)}` : base;
+}
+
+function getMessageShortId(messageId) {
+  const value = String(messageId ?? "");
+  return value.startsWith("thread-") ? value.slice("thread-".length) : value.slice(0, 8);
 }
 
 export function parseSlashCommand(text) {
