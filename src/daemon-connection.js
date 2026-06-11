@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import os from "node:os";
+import { log } from "./logger.js";
 
 export class DaemonConnection {
   constructor(options) {
@@ -26,7 +27,15 @@ export class DaemonConnection {
   send(message) {
     const payload = JSON.stringify(message);
     if (this.ws?.readyState === WebSocket.OPEN) {
-      if (message.type !== "pong") console.error(`[raftbot] send ${message.type}`);
+      if (message.type !== "pong") log("daemon.send", {
+        type: message.type,
+        agentId: message.agentId,
+        requestId: message.requestId,
+        activity: message.activity,
+        status: message.status,
+        runtimeCount: Array.isArray(message.runtimes) ? message.runtimes.length : undefined,
+        modelCount: Array.isArray(message.models) ? message.models.length : undefined
+      });
       this.ws.send(payload);
     }
   }
@@ -38,19 +47,26 @@ export class DaemonConnection {
     this.ws = ws;
 
     ws.on("open", () => {
-      console.error(`[raftbot] connected to ${this.serverUrl}`);
+      log("daemon.connected", { serverUrl: this.serverUrl });
       this.reconnectDelayMs = 1000;
       this.onOpen();
     });
 
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
-      if (msg.type !== "ping") console.error(`[raftbot] received ${msg.type}`);
+      if (msg.type !== "ping") log("daemon.recv", {
+        type: msg.type,
+        agentId: msg.agentId,
+        requestId: msg.requestId,
+        runtime: msg.runtime,
+        seq: msg.seq,
+        deliveryId: msg.deliveryId
+      });
       this.onMessage(msg);
     });
 
     ws.on("close", () => {
-      console.error("[raftbot] disconnected");
+      log("daemon.disconnected");
       this.onClose();
       if (!this.shouldConnect) return;
       const delay = this.reconnectDelayMs;

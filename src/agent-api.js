@@ -1,4 +1,5 @@
 const RUNNER_SCOPES = ["send", "read", "mentions", "tasks", "reactions", "server", "channels", "knowledge"];
+import { log } from "./logger.js";
 
 export class AgentApiClient {
   constructor(options) {
@@ -7,8 +8,14 @@ export class AgentApiClient {
     this.agentCredentials = new Map();
   }
 
-  async sendMessage(agentId, target, content) {
+  async sendMessage(agentId, target, content, options = {}) {
     const credential = await this.getAgentCredential(agentId);
+    log("agent_api.send.start", {
+      agentId,
+      target,
+      seenUpToSeq: options.seenUpToSeq,
+      contentLength: content.length
+    });
     const res = await fetch(new URL("/internal/agent-api/send", this.serverUrl), {
       method: "POST",
       headers: {
@@ -20,19 +27,31 @@ export class AgentApiClient {
       body: JSON.stringify({
         target,
         content,
-        draftReholdCount: 0
+        draftReholdCount: 0,
+        ...Number.isInteger(options.seenUpToSeq) && options.seenUpToSeq > 0 ? { seenUpToSeq: options.seenUpToSeq } : {}
       })
     });
     if (!res.ok) {
       const detail = await safeErrorDetail(res);
+      log("agent_api.send.failed", { agentId, target, status: res.status, detail });
       throw new Error(`send_message_failed: HTTP ${res.status} ${detail}`);
     }
-    return res.json().catch(() => ({}));
+    const body = await res.json().catch(() => ({}));
+    if (body?.state === "held") {
+      log("agent_api.send.held", { agentId, target, seenUpToSeq: body.seenUpToSeq });
+      throw new Error(`send_message_held: ${JSON.stringify(body).slice(0, 500)}`);
+    }
+    log("agent_api.send.ok", { agentId, target, messageId: body.messageId });
+    return body;
   }
 
   async getAgentCredential(agentId) {
     const cached = this.agentCredentials.get(agentId);
-    if (cached) return cached;
+    if (cached) {
+      log("agent_api.credential.cached", { agentId });
+      return cached;
+    }
+    log("agent_api.credential.mint.start", { agentId });
     const res = await fetch(new URL(`/internal/computer/runners/${encodeURIComponent(agentId)}/credentials`, this.serverUrl), {
       method: "POST",
       headers: {
@@ -47,6 +66,7 @@ export class AgentApiClient {
     });
     if (!res.ok) {
       const detail = await safeErrorDetail(res);
+      log("agent_api.credential.mint.failed", { agentId, status: res.status, detail });
       throw new Error(`runner_credential_mint_failed: HTTP ${res.status} ${detail}`);
     }
     const body = await res.json();
@@ -58,6 +78,7 @@ export class AgentApiClient {
       credentialId: typeof body.credentialId === "string" ? body.credentialId : null
     };
     this.agentCredentials.set(agentId, credential);
+    log("agent_api.credential.mint.ok", { agentId, credentialId: credential.credentialId });
     return credential;
   }
 }

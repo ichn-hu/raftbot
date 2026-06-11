@@ -1,5 +1,6 @@
 import { DaemonConnection, readyMessage } from "./daemon-connection.js";
 import { AgentApiClient } from "./agent-api.js";
+import { log } from "./logger.js";
 
 export function createBot() {
   const commands = new Map();
@@ -46,6 +47,12 @@ export function createBot() {
         connection.send({ type: "pong" });
         break;
       case "agent:start":
+        log("agent.start", {
+          agentId: msg.agentId,
+          launchId: msg.launchId,
+          runtime: msg.config?.runtime,
+          model: msg.config?.model
+        });
         agents.set(msg.agentId, {
           launchId: msg.launchId,
           activity: "online",
@@ -56,16 +63,36 @@ export function createBot() {
         sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
         break;
       case "agent:stop":
+        log("agent.stop", { agentId: msg.agentId, launchId: msg.launchId });
         agents.delete(msg.agentId);
         connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
         break;
       case "agent:deliver":
+        log("agent.deliver", {
+          agentId: msg.agentId,
+          seq: msg.seq,
+          deliveryId: msg.deliveryId,
+          messageId: msg.message?.message_id,
+          sender: msg.message?.sender_name,
+          channelType: msg.message?.channel_type,
+          channelName: msg.message?.channel_name
+        });
         await handleDelivery(msg);
         break;
       case "agent:activity_probe":
         respondToActivityProbe(msg.agentId, msg.probeId);
         break;
+      case "agent:skills:list":
+        log("agent.skills.list", { agentId: msg.agentId });
+        connection.send({
+          type: "agent:skills:list_result",
+          agentId: msg.agentId,
+          global: [],
+          workspace: []
+        });
+        break;
       case "machine:runtime_models:detect":
+        log("runtime.models.detect", { runtime: msg.runtime, requestId: msg.requestId, modelId, runtimeLabel });
         connection.send({
           type: "machine:runtime_models:result",
           requestId: msg.requestId,
@@ -83,18 +110,35 @@ export function createBot() {
     const event = normalizeMessageEvent(msg);
     const parsed = parseSlashCommand(event.text);
     if (!parsed) {
+      log("command.skip", { reason: "not_slash", agentId: msg.agentId, messageId: event.id });
       ackDelivery(msg);
       return;
     }
     const handler = commands.get(parsed.name);
     if (!handler) {
+      log("command.skip", { reason: "unknown_command", command: parsed.name, agentId: msg.agentId, messageId: event.id });
       ackDelivery(msg);
       return;
     }
+    log("command.start", {
+      command: parsed.name,
+      agentId: msg.agentId,
+      messageId: event.id,
+      replyTarget: event.replyTarget,
+      seenUpToSeq: msg.seq
+    });
     const ctx = createContext(msg, event, parsed);
-    await handler(ctx);
-    sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
-    ackDelivery(msg);
+    try {
+      await handler(ctx);
+      log("command.ok", { command: parsed.name, agentId: msg.agentId, messageId: event.id });
+      sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log("command.failed", { command: parsed.name, agentId: msg.agentId, messageId: event.id, detail });
+      sendActivity(msg.agentId, "error", detail, msg.launchId);
+    } finally {
+      ackDelivery(msg);
+    }
   }
 
   function createContext(msg, event, parsed) {
@@ -104,7 +148,15 @@ export function createBot() {
       command: parsed.name,
       args: parsed.args,
       async reply(text) {
-        await agentApi.sendMessage(msg.agentId, event.replyTarget, text);
+        log("ctx.reply", {
+          agentId: msg.agentId,
+          target: event.replyTarget,
+          seenUpToSeq: msg.seq,
+          contentLength: text.length
+        });
+        await agentApi.sendMessage(msg.agentId, event.replyTarget, text, {
+          seenUpToSeq: msg.seq
+        });
       }
     };
   }
@@ -116,11 +168,17 @@ export function createBot() {
       seq: msg.seq > 0 ? msg.seq : msg.message?.seq ?? 0,
       deliveryId: msg.deliveryId
     });
+    log("agent.deliver.ack", {
+      agentId: msg.agentId,
+      seq: msg.seq > 0 ? msg.seq : msg.message?.seq ?? 0,
+      deliveryId: msg.deliveryId
+    });
   }
 
   function respondToActivityProbe(agentId, probeId) {
     const state = agents.get(agentId);
     if (!state) {
+      log("agent.activity_probe", { agentId, probeId, activity: "offline" });
       connection.send({
         type: "agent:activity",
         agentId,
@@ -130,6 +188,7 @@ export function createBot() {
       });
       return;
     }
+    log("agent.activity_probe", { agentId, probeId, activity: state.activity });
     connection.send({
       type: "agent:activity",
       agentId,
