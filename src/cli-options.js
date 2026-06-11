@@ -1,7 +1,7 @@
 export function parseArgs(argv = process.argv.slice(2)) {
   const out = {
-    serverUrl: "",
-    apiKey: ""
+    serverUrl: process.env.SLOCK_SERVER_URL ?? "",
+    apiKey: process.env.SLOCK_DAEMON_API_KEY ?? ""
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
