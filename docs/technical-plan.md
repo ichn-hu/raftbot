@@ -1,144 +1,200 @@
-# Raft Bot technical plan
+# Raft Bot 技术方案
 
-## Goal
+## 目标
 
-Raft Bot is a programmable Slock Agent runtime. From the Slock server and user perspective it behaves like an Agent: it has an agent identity, can receive channel/thread/DM delivery, can send messages, can create/claim/update tasks, can upload attachments, and can react to messages. The difference is the decision loop: a Raft Bot runs deterministic application code instead of an LLM turn.
+Raft Bot 是一个程序化的 Slock Agent runtime。对 Slock Server 和用户来说，它表现为一个 Agent：有 Agent 身份，可以接收 channel、thread、DM，可以发送消息，可以参与 task、attachment、reminder、action 等工作流。
 
-## Expected Launch UX
+区别在于决策方式：普通 Agent 的行为由 LLM turn 决定；Raft Bot 的行为由确定性的程序代码决定。它更适合高频、可审计、可审批、可重复执行的工作流。
 
-Target user flow:
+## Repo 定位
+
+`raftbot` repo 的定位不是某一个具体 bot，而是 RaftBot 开发框架。
+
+目标是提供一个类似 Slack/Telegram Bot SDK 的开发体验，让开发者可以轻松写出 Slock 上的程序化 bot。开发者应该只关心：
+
+- 定义 command。
+- 处理 message/event。
+- 调用 `ctx.reply()`、`ctx.createTask()`、`ctx.uploadAttachment()` 等 high-level API。
+- 持久化业务状态。
+- 实现业务 policy。
+
+开发者不应该直接关心：
+
+- WebSocket 如何连接 Slock Server。
+- `/daemon/connect?key=...` 怎么握手。
+- `agent:start` / `agent:deliver` / `agent:deliver:ack` 的内部协议细节。
+- runner credential 如何 mint。
+- reconnect/watchdog/machine lock 如何处理。
+
+这个 repo 应包含：
+
+- framework core：daemon-compatible transport、runtime、command router、context API。
+- example bots：基于 framework 实现的 demo bot。
+- docs：技术方案、协议逆向、example 说明。
+
+当前 PR 中的 example：
+
+- `examples/prod-db-operator`：Production Database Operator demo。
+
+## 预期上线方式
+
+目标用户体验：
 
 ```bash
 npx raftbot-prod-db-operator \
   --server-url https://api.slock.ai \
-  --api-key rbk_xxxx
+  --api-key sk_machine_xxxx
 ```
 
-In Slock, the user/admin first adds a new Agent. That Agent is the bot identity. Slock mints an API key for this bot install; the API key is bound to:
+这里的 `--server-url` 和 `--api-key` 应该按 Slock Daemon 的语义理解，而不是一个新的 Bot REST API。
 
-- server/workspace id
-- bot agent id and display profile
-- installed package name/version
-- granted scopes
-- allowed channel/thread/DM subscriptions
-- optional command manifest
-
-This means the bot package does not require `slock agent login` or a local Slock profile. `--server-url` and `--api-key` are enough for the runtime to connect, receive events, and send messages. The existing `slock` CLI remains useful for development/debugging, but it should not be required for production bot launch.
-
-## Daemon model
-
-Phase 1 should support one bot per daemon:
+也就是说，RaftBot 伪装成一个 Slock Daemon：
 
 ```text
-one npm package process = one bot Agent identity = one API key = one daemon
+RaftBot process --daemon protocol--> Slock Server
 ```
 
-This keeps deployment, logs, permissions, state, and failure isolation simple. If the Production Database Operator crashes, it only affects that operator bot; a Reminder Bot or another workflow bot runs as a separate process.
+用户或 server admin 在 Slock 里添加一个 Agent，这个 Agent 就是 bot identity。然后 RaftBot 使用 daemon key 连接到 Slock Server。Server 把这个 bot Agent 的 start/deliver 事件发给 RaftBot；RaftBot 不再启动 Claude/Codex 等 LLM runtime，而是把事件交给程序化 bot handler。
 
-Future phases can add:
+## 与 Slock Daemon 的关系
 
-- one daemon running multiple bot packages.
-- hot update of bot packages and manifests.
-- marketplace-managed install/update lifecycle.
-- Slock-hosted bot runner where users install from marketplace without manually running `npx`.
+当前 Slock Daemon 的启动方式是：
 
-## MVP transport
+```bash
+slock-daemon --server-url <url> --api-key <key>
+```
 
-Use a direct bot API transport as the primary runtime:
+发布包中的 daemon 代码显示：
 
-1. A human/server admin adds a bot Agent in Slock.
-2. Slock creates a bot install and shows an API key.
-3. The operator runs the package with `npx raftbot-xxxx --server-url <url> --api-key <key>`.
-4. The bot loops over:
-   - bot event receive endpoint for ordinary delivery.
-   - configured target subscriptions for channel/thread/DM watches.
-   - bot send endpoint for replies.
-   - later task/attachment/reminder/action endpoints for richer workflows.
+- CLI 参数只解析 `--server-url` 和 `--api-key`。
+- daemon 使用 WebSocket 连接：
 
-The CLI-shell transport can remain as a local fallback while the direct bot API is being stabilized.
+```text
+<server-url with ws scheme>/daemon/connect?key=<apiKey>
+```
 
-## Long-term transport
+- 连接成功后 daemon 发送 `ready`。
+- Server 通过 WebSocket 下发 `agent:start`、`agent:deliver`、`agent:stop`、`reminder.*`、`machine:*` 等消息。
+- Daemon 通过 WebSocket 回传 `agent:status`、`agent:activity`、`agent:deliver:ack`、`agent:session`、`pong` 等消息。
 
-Expose a small Raft Bot SDK around a transport interface:
+RaftBot 应该复用这套连接方式。它可以是一个“特殊 daemon”：只服务一个程序化 bot，不负责管理通用 LLM runtime。
+
+## Daemon 模型
+
+Phase 1 先支持一个 bot 一个 daemon：
+
+```text
+one npm package process = one daemon connection = one bot Agent identity
+```
+
+这样部署、日志、权限、状态、故障隔离都最简单。如果 Production Database Operator 挂了，只影响这个 operator bot；Reminder Bot 或其他 workflow bot 作为独立进程运行。
+
+未来可以支持：
+
+- 一个 daemon 运行多个不同 bot。
+- bot package 和 command manifest 热更新。
+- marketplace 管理安装、升级、回滚。
+- Slock-hosted bot runner，让用户从 marketplace 安装后无需手动运行 `npx`。
+
+## MVP Transport
+
+MVP 采用 Slock Daemon-compatible transport：
+
+1. 用户或 server admin 在 Slock 内添加一个 bot Agent。
+2. Slock 提供可用于 daemon 连接的 API key。
+3. operator 运行 `npx raftbot-xxxx --server-url <url> --api-key <key>`。
+4. RaftBot 连接 WebSocket：`/daemon/connect?key=<apiKey>`。
+5. RaftBot 发送 `ready`，声明自己支持 bot runtime 能力。
+6. Server 下发 `agent:start` 后，RaftBot 将该 agent 绑定到本 bot handler。
+7. Server 下发 `agent:deliver` 后，RaftBot 解析消息并运行 command router。
+8. RaftBot 对 delivery 发送 `agent:deliver:ack`。
+9. RaftBot 需要回复用户时，通过 daemon 协议或 runner credential 调用 Slock 的消息发送能力。
+
+这个模型的关键点是：RaftBot 不是一个外部 chat bot webhook，而是 Slock Server 眼里的一个 daemon。
+
+## Bot Runtime 边界
+
+RaftBot 内部可以抽象为：
 
 ```ts
-interface RaftBotTransport {
-  receive(): Promise<SlockEvent[]>;
-  read(target: string, cursor?: string): Promise<SlockEventPage>;
-  send(target: string, body: string, opts?: SendOptions): Promise<SentMessage>;
-  createTask(input: CreateTaskInput): Promise<Task>;
-  updateTask(input: UpdateTaskInput): Promise<void>;
-  upload(input: UploadInput): Promise<Attachment>;
+interface RaftBot {
+  manifest: BotManifest;
+  onStart(ctx: BotContext): Promise<void>;
+  onMessage(event: BotMessageEvent, ctx: BotContext): Promise<void>;
+  onStop?(ctx: BotContext): Promise<void>;
 }
 ```
 
-Implementations:
+Daemon-compatible transport 负责：
 
-- `SlockBotApiTransport`: direct HTTP/WebSocket transport using `--server-url` and `--api-key`. Best production path.
-- `SlockCliTransport`: shells out to the published CLI. Useful fallback for development while API contracts are being stabilized.
-- `SlockAgentApiTransport`: compatibility layer over current agent-token endpoints.
-- `SlockBridgeTransport`: optional event-stream bridge similar to `slock agent bridge` for low-latency wake delivery.
+- 建立 WebSocket。
+- 发送 `ready`。
+- 处理 `agent:start` / `agent:stop`。
+- 处理 `agent:deliver`，并 ack。
+- 向 bot handler 提供 `sendMessage`、`createTask`、`uploadAttachment` 等能力。
 
-## Bot framework
+Bot handler 只关心业务逻辑：
 
-The framework should provide:
+- command router。
+- policy check。
+- approval workflow。
+- reminder predicate。
+- audit state。
 
-- Identity: one Slock Agent profile per bot instance.
-- Listener registry: subscribe to targets such as `#channel`, `#channel:thread`, or `dm:@user`.
-- Command router: parse slash-style text commands like `/help`, `/sql <statement>`, `/deploy staging`, `/approve <id>`.
-- Event filters: ignore system messages, ignore the bot's own messages, optionally require allowlisted channels/users.
-- State store: file/SQLite/Postgres adapter for cursors, approval records, idempotency keys, and audit history.
-- Workflow primitives: approval request, timeout reminder, task mirror, message thread reply, attachment handling.
-- Policy hooks: who can invoke a command, who can approve, whether requester self-approval is allowed.
+## Bot Framework 能力
 
-## Demo behavior
+框架应提供：
 
-The current prototype behavior should implement:
+- Identity：一个 bot daemon 对应一个 Slock Agent identity。
+- Listener registry：监听 `#channel`、`#channel:thread`、`dm:@user` 等 target。
+- Command router：解析 `/help`、`/sql <statement>`、`/approve <id>` 等 slash-style command。
+- Event filter：忽略 system message，忽略 bot 自己发送的消息，支持 channel/user allowlist。
+- State store：文件、SQLite、Postgres adapter，用于 cursor、approval、idempotency key、audit history。
+- Workflow primitives：approval request、timeout reminder、task mirror、thread reply、attachment handling。
+- Policy hooks：谁可以调用 command，谁可以审批，请求人是否允许自批。
 
-- `/help`: prints available bot commands.
-- `/sql <statement>`: accepts a production database write request.
-  - If sender is in `RAFT_BOT_SQL_ALLOWLIST`, the request is immediately recorded as executed.
-  - Otherwise the bot sends an approval request to `RAFT_BOT_MANAGER_TARGET` if configured, or the same thread if not configured.
-  - The demo records approved SQL into `RAFT_BOT_SQL_LOG` as JSON lines. It intentionally does not connect to a real database.
-- `/remind in <duration> <text>`: schedules a bot-managed reminder, e.g. `/remind in 10m check job`.
-- `/remind at <iso-time> <text>`: schedules a bot-managed reminder at an exact timestamp.
-- `/deploy <env>`: creates a pending approval request in local JSON state and replies in the message thread.
-- `/approve <id>`: approves a pending request.
-- `/reject <id>`: rejects a pending request.
+## Agent-authored Bot
 
-Run shape:
+Raft Bot 本身也可以由 Agent 来实现和维护。
 
-```bash
-npx raftbot-prod-db-operator \
-  --server-url https://api.slock.ai \
-  --api-key rbk_xxxx \
-  --targets "#ops,dm:@db-manager" \
-  --sql-allowlist "@Alice,@Bob" \
-  --managers "@ichnhu" \
-  --manager-target "dm:@ichnhu"
-```
+典型闭环：
 
-For a production approval flow, replace the local JSON state with durable DB storage and add policy checks:
+1. 人提出需求，例如“实现一个 Production Database Operator Bot”。
+2. Agent 编写 bot 代码、测试、提交 PR。
+3. bot 作为确定性 daemon 运行，处理稳定、高频、可审计的动作。
+4. bot 遇到复杂异常或未知 case 时，把上下文交回 Agent。
+5. Agent 继续迭代 bot，再发布到 marketplace。
 
-- requester cannot approve their own request unless explicitly allowed.
-- approvers must match channel/team policy.
-- each state transition writes an audit message to the request thread.
-- optional timeout uses `slock reminder schedule`.
-- final approval can trigger an external action, such as deployment, webhook call, or task status update.
+这样 Slock 内会同时存在两类协作者：
 
-## Production Database Operator example
+- LLM Agent：负责理解、设计、开发、处理复杂异常。
+- Deterministic Bot：负责稳定执行程序化 workflow。
 
-Concrete flow:
+两者共享同一套 Slock 表面：channel、thread、DM、task、approval、attachment、reminder。
 
-1. User or agent posts `/sql update users set plan = 'pro' where id = 'u_123'`.
-2. Bot receives the message as a Slock Agent.
-3. Bot checks policy:
-   - sender in SQL allowlist: execute immediately and write audit result to the thread.
-   - sender not in allowlist: create approval record and notify the manager in a DM or the same thread.
-4. Manager replies `/approve <id>` or `/reject <id>`.
-5. On approval, bot executes the DB adapter and posts the result back to the original thread.
+## 示例一：Production Database Operator Bot
 
-Production DB execution should be behind an adapter:
+场景：用户希望 Agent 操作 Production Database，但写 SQL 需要可审计、可审批。
+
+命令：
+
+- `/sql <statement>`：提交 production DB 写入请求。
+- `/approve <id>`：manager 审批执行。
+- `/reject <id>`：manager 拒绝执行。
+- `/help`：查看帮助。
+
+流程：
+
+1. 用户或 Agent 发送 `/sql update users set plan = 'pro' where id = 'u_123'`。
+2. Slock Server 将消息作为 `agent:deliver` 发给 RaftBot daemon。
+3. RaftBot ack delivery，并把 message event 交给 DB Operator handler。
+4. Bot 检查 policy：
+   - sender 在 SQL allowlist 内：直接执行，并把结果写回 thread。
+   - sender 不在 allowlist 内：创建 approval record，并在 DM 或原 thread 里 @manager 审批。
+5. manager 回复 `/approve <id>` 或 `/reject <id>`。
+6. 如果审批通过，bot 执行 DB adapter，并把执行结果写回原 thread。
+
+DB 执行应该放在 adapter 后面：
 
 ```ts
 interface SqlExecutor {
@@ -147,118 +203,124 @@ interface SqlExecutor {
 }
 ```
 
-Required production controls:
+生产控制要求：
 
-- allow only configured write verbs, or require an explicit `--write` flag.
-- run `EXPLAIN`/dry-run before manager approval.
-- bind DB credentials to the bot instance, not to arbitrary user input.
-- require manager approval for all non-allowlisted senders.
-- record requester, approver, SQL, timestamp, target, and execution result.
-- optionally require two-person approval for dangerous tables.
+- 默认只允许配置过的 write verb，或要求显式 `--write` flag。
+- manager 审批前先执行 `EXPLAIN` 或 dry-run。
+- DB credential 绑定 bot instance，不允许任意用户输入 credential。
+- 非白名单 sender 必须 manager approval。
+- 记录 requester、approver、SQL、timestamp、target、execution result。
+- 对危险表支持双人审批。
 
-## Programmatic Reminder Bot example
+示例运行方式：
 
-Slock's built-in reminder model is time-based. A Raft Bot reminder can be rule-based because the bot owns the detection loop.
+```bash
+npx raftbot-prod-db-operator \
+  --server-url https://api.slock.ai \
+  --api-key sk_machine_xxxx \
+  --sql-allowlist "@Alice,@Bob" \
+  --managers "@ichnhu" \
+  --manager-target "dm:@ichnhu"
+```
 
-Examples:
+## 示例二：Programmatic Reminder Bot
+
+Slock 当前 reminder 偏时间触发；Raft Bot Reminder 可以支持任意程序化规则，因为 bot 自己拥有检测循环。
+
+命令示例：
 
 - `/remind in 10m review deploy result`
 - `/remind at 2026-06-11T16:00:00Z run settlement check`
-- future: `/remind when job nightly_import failed for 3 runs`
-- future: `/remind when BTC drawdown > 8% and volume spike`
+- 未来：`/remind when job nightly_import failed for 3 runs`
+- 未来：`/remind when BTC drawdown > 8% and volume spike`
 
-Implementation model:
+实现模型：
 
-1. Command handler parses a rule and stores it as a reminder record.
-2. Scheduler loop evaluates due reminders and arbitrary predicates.
-3. When a rule matches, bot sends a Slock message to the target channel/thread/DM and marks the reminder fired.
-4. For complex rules, predicate adapters can poll databases, queues, metrics, CI systems, or webhooks.
+1. command handler 解析 rule 并保存 reminder record。
+2. scheduler loop 周期性评估 due reminders 和 predicate。
+3. rule 命中后，bot 向目标 channel/thread/DM 发送提醒，并标记 fired。
+4. 复杂规则通过 predicate adapter 实现，例如轮询 DB、queue、metrics、CI、webhook。
 
-This makes reminders a bot/plugin capability, not just a fixed Slock server primitive.
+这使 reminder 成为 bot/plugin 能力，而不只是 Slock Server 内置的固定时间能力。
 
-## Slash command semantics
+## Slash Command 语义
 
-For MVP, "slash command" means a normal Slock message whose first token starts with `/`. This requires no server change and works in channels, threads, and DMs.
+MVP 阶段，slash command 可以先是普通 Slock message，首 token 以 `/` 开头。这不需要 UI/server 改动，channel、thread、DM 都能工作。
 
-For a more native product surface later, add server-side command metadata:
+后续可以加入 native command manifest：
 
-- Bot publishes command manifest: command name, args schema, help text, scopes.
-- Slock UI autocompletes `/help`, `/deploy`, etc.
-- Server delivers a structured command event to the bot, while still rendering the command in chat for auditability.
+- bot 发布 command manifest：command 名称、参数 schema、help text、scopes。
+- Slock UI 支持 `/help`、`/sql` 等 autocomplete。
+- Server 投递 structured command event 给 bot，同时在 chat 中保留可审计记录。
 
-## Reliability
+## 可靠性
 
-- Use per-target cursors for read polling.
-- Use message id + command text as an idempotency key.
-- Store outbound send results to avoid duplicate replies after restart.
-- Run only one active bot process per profile, using a lock file.
-- Keep `message check` and explicit `read --after` paths separate: inbox delivery handles normal mentions/membership, explicit watches handle configured channels/threads/DMs.
+- 使用 delivery id/message id 作为 idempotency key。
+- 对每个 `agent:deliver` 处理成功后发送 `agent:deliver:ack`。
+- 保存 outbound send result，避免 restart 后重复回复。
+- Phase 1 每个 bot daemon 使用 machine lock，保证同一 daemon key 只有一个 active process。
+- WebSocket 断线后按 Slock Daemon 的 reconnect/backoff 逻辑恢复。
 
-## Security
+## 安全性
 
-- Treat the bot token like an agent token.
-- Scope bot membership to only channels/DMs it needs.
-- Enforce command permissions in bot code, not just in UI.
-- Keep approval decisions append-only in audit state.
-- Do not expose arbitrary shell execution as a bot command.
+- daemon API key 等价于 machine key，需要同等级保护。
+- bot membership/scopes 只授予必要 channel、DM、task、attachment 权限。
+- command permission 必须在 bot code 内强制校验，不能只依赖 UI。
+- approval decision 和 execution result 必须 append-only audit。
+- 禁止把任意 shell execution 暴露为 bot command。
 
-## Recommended milestones
+## Marketplace 方向
 
-1. MVP CLI transport and command router.
-2. Durable state store and idempotency.
-3. Approval workflow primitive with policy checks.
-4. Bot manifest and `/help` generation.
-5. Native Agent API transport or event bridge for lower latency.
-6. Slock UI/native slash command integration.
-7. Raft Bot marketplace: packaged bot manifests, required scopes, setup UI, per-server install, versioning, and server-admin approval.
+未来 Raft Bot Marketplace 中的 bot package 应包含：
 
-## Marketplace direction
+- manifest：name、description、version、commands、required scopes、event subscriptions。
+- install schema：需要配置的 env/secrets，例如 DB DSN、manager target、allowlists。
+- runtime package：npm package 或 Slock-hosted runtime bundle。
+- permission request：channel、DM、task、attachment、external network/secrets。
+- audit contract：决策和执行记录写到哪里。
 
-A marketplace bot package should contain:
+安装流程：
 
-- manifest: name, description, version, commands, required scopes, event subscriptions.
-- install schema: required env/secrets such as DB DSN, manager target, allowlists.
-- runtime image or source package.
-- permission request: channels, DMs, task access, attachment access, external network/secrets.
-- audit contract: where decisions and executions are logged.
+1. server admin 从 marketplace 选择 bot。
+2. Slock 创建或关联一个 Agent identity。
+3. admin 审批 scopes，并配置 secrets/policies。
+4. Slock 为该 bot daemon 生成 daemon-compatible API key。
+5. operator 手动运行 `npx <package> --server-url <url> --api-key <key>`，或由 Slock-hosted runner 自动运行。
+6. Slock 根据 command manifest 暴露 native slash commands。
 
-Install flow:
+这个方向会让 Raft Bot 成为 Slock-native 的程序化 CLI 层：不是所有操作都由 LLM Agent 即时推理，而是由可复用、可审计、可安装的 bot package 承载确定性 workflow。
 
-1. Server admin selects a bot from marketplace.
-2. Slock creates or links an Agent identity for that bot.
-3. Admin approves scopes and configures secrets/policies.
-4. Slock mints an install-scoped bot API key.
-5. Operator starts the bot with `npx <package> --server-url <url> --api-key <key>`, or Slock-hosted runner starts it automatically.
-6. Slock exposes its command manifest as native slash commands.
+## Slack 和 Telegram 参考
 
-This positions Raft Bot as the Slock-native programmable CLI layer: instead of every operation being driven by an LLM Agent, reusable bot packages provide deterministic, auditable workflows inside the same chat/task/DM surfaces.
+Slack 的成熟模型：
 
-## Slack and Telegram references
+- Events API 通过 HTTP callback 或 Socket Mode 给 app/bot 投递事件。
+- Slash command 从 composer 触发，向 app 投递结构化 payload。
+- App 声明 scopes，并安装到 workspace。
+- App directory/marketplace 支持发现、安装、权限审查、更新。
 
-Slack's proven model:
+Telegram 的成熟模型：
 
-- Events API delivers subscribed events to a bot/app through HTTP callbacks or Socket Mode.
-- Slash commands are app invocations from the composer and deliver a structured payload to the app.
-- Apps declare scopes and are installed into workspaces.
-- Marketplace/app directory provides discovery, install, permission review, and updates.
+- Bot 通过 `getUpdates` long polling 或 webhook 接收 update。
+- Update 是 JSON object，并带有递增 offset。
+- 发送消息是简单 API call，例如 `sendMessage`。
+- Bot commands 可声明，客户端可以展示 command help/autocomplete。
 
-Telegram's proven model:
+Raft Bot 不直接照搬 Slack/Telegram 的 HTTP webhook 模型，而是借鉴它们的产品抽象：bot install、command manifest、scope approval、marketplace。底层 transport 则优先复用 Slock Daemon 协议。
 
-- A bot receives updates through either `getUpdates` long polling or webhook delivery.
-- Updates are JSON objects with a monotonically advancing offset.
-- Sending messages is a simple Bot API method call such as `sendMessage`.
-- Bot commands are declared so clients can show command help/autocomplete.
-
-Raft Bot should borrow these choices:
-
-- support both polling and push/webhook/event-stream delivery.
-- expose a stable update object and cursor/offset.
-- keep send-message as a simple API call.
-- let bots publish command manifests for `/help` and UI autocomplete.
-- make install scopes explicit like Slack apps.
-
-Official docs checked:
+官方参考：
 
 - Slack Events API: https://docs.slack.dev/apis/events-api/
 - Slack slash commands: https://docs.slack.dev/interactivity/implementing-slash-commands
 - Telegram Bot API updates: https://core.telegram.org/bots/api#getting-updates
+
+## 推荐里程碑
+
+1. Daemon-compatible RaftBot transport：WebSocket `/daemon/connect?key=...`。
+2. 处理 `ready`、`agent:start`、`agent:deliver`、`agent:deliver:ack`。
+3. Bot SDK：command router、state store、policy hooks。
+4. Production Database Operator demo。
+5. Programmatic Reminder demo。
+6. Bot manifest 和 native `/help` generation。
+7. Marketplace install schema 和 scope approval。
+8. Multi-bot daemon、hot update、Slock-hosted runner。

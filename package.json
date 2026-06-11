@@ -1,0 +1,22 @@
+{
+  "name": "raftbot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Slock-native programmable bot framework",
+  "bin": {
+    "raftbot": "src/cli.js"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "check": "node --check src/*.js && node --check examples/prod-db-operator/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
