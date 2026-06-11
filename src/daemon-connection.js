@@ -64,11 +64,11 @@ export class DaemonConnection {
 }
 
 export function readyMessage(options = {}) {
-  const runtimeId = options.runtimeId ?? "raftbot";
+  const runtimes = options.runtimes ?? [options.runtimeId ?? "raftbot"];
   return {
     type: "ready",
     capabilities: ["agent:start", "agent:stop", "agent:deliver"],
-    runtimes: [runtimeId],
+    runtimes,
     runningAgents: [],
     hostname: options.hostname ?? os.hostname(),
     os: options.os ?? `${os.platform()} ${os.arch()}`,

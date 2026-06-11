@@ -9,10 +9,14 @@ It lets developers build deterministic bots on Slock with an API that should fee
 ```bash
 npx raftbot-prod-db-operator \
   --server-url https://api.slock.ai \
-  --api-key sk_machine_xxxx
+  --api-key sk_machine_xxxx \
+  --runtime-ids "claude,codex,antigravity,kimi,copilot,cursor,gemini,opencode,pi" \
+  --runtime-label "Production Database Operator"
 ```
 
 Phase 1 is one bot per daemon process. Future phases can support multi-bot daemons, hot update, and marketplace-managed installs.
+
+Until Slock has native RaftBot runtime registration, a bot daemon can advertise all server-known runtimes as ready and expose the bot implementation as the model name.
 
 ## Docs
 

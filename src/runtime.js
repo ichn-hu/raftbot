@@ -26,7 +26,8 @@ export function createBot() {
         onOpen: () => {
           connection.send(readyMessage({
             daemonVersion: options.daemonVersion,
-            runtimeId: options.runtimeId
+            runtimeId: options.runtimeId,
+            runtimes: parseRuntimeIds(options)
           }));
         },
         onMessage: (msg) => {
@@ -58,8 +59,8 @@ export function createBot() {
         connection.send({
           type: "machine:runtime_models:result",
           requestId: msg.requestId,
-          models: [{ id: "default", label: botLabel(msg.runtime, runtimeLabel), verified: true }],
-          default: "default"
+          models: [{ id: options.modelId ?? "default", label: runtimeLabel, verified: true }],
+          default: options.modelId ?? "default"
         });
         break;
       default:
@@ -108,12 +109,16 @@ export function createBot() {
   return bot;
 }
 
-function botLabel(runtime, fallback) {
-  return runtime && runtime !== "raftbot" ? runtime : fallback;
-}
-
 function normalizeCommand(name) {
   return name.replace(/^\//, "").trim().toLowerCase();
+}
+
+function parseRuntimeIds(options) {
+  if (Array.isArray(options.runtimeIds) && options.runtimeIds.length > 0) return options.runtimeIds;
+  if (typeof options.runtimeIds === "string" && options.runtimeIds.trim()) {
+    return options.runtimeIds.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return [options.runtimeId ?? "raftbot"];
 }
 
 function normalizeMessageEvent(msg) {

@@ -226,7 +226,7 @@ RaftBot MVP 需要发送：
 
 ## Runtime model detect
 
-RaftBot 可以把 runtime id 映射成 bot package id：
+理想情况下，RaftBot 可以把 runtime id 映射成 bot package id：
 
 ```text
 raftbot-prod-db-operator
@@ -260,6 +260,32 @@ raftbot-prod-db-operator
 ```
 
 验证结果：Server 会调用这个 detect，并且 UI 能显示 daemon 返回的 model。若 runtime 仍无法选择，问题在 runtime installed/available gating，不在 model detect 链路。
+
+当前绕过方式是上报所有 server 已知 runtime：
+
+```json
+{
+  "type": "ready",
+  "runtimes": ["claude", "codex", "antigravity", "kimi", "copilot", "cursor", "gemini", "opencode", "pi"]
+}
+```
+
+然后对任意 `machine:runtime_models:detect` 返回 bot model：
+
+```json
+{
+  "type": "machine:runtime_models:result",
+  "requestId": "req_123",
+  "models": [
+    {
+      "id": "prod-db-operator",
+      "label": "Production Database Operator",
+      "verified": true
+    }
+  ],
+  "default": "prod-db-operator"
+}
+```
 
 ## 发送聊天消息
 
