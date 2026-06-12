@@ -5,6 +5,9 @@ import { log } from "./logger.js";
 export function createBot() {
   const commands = new Map();
   const messageHandlers = new Set();
+  const startHandlers = new Set();
+  const stopHandlers = new Set();
+  const scheduledJobs = [];
   const agents = new Map();
   let connection = null;
   let agentApi = null;
@@ -20,6 +23,25 @@ export function createBot() {
 
     onMessage(handler) {
       messageHandlers.add(handler);
+      return bot;
+    },
+
+    onStart(handler) {
+      startHandlers.add(handler);
+      return bot;
+    },
+
+    onStop(handler) {
+      stopHandlers.add(handler);
+      return bot;
+    },
+
+    every(interval, handler, options = {}) {
+      scheduledJobs.push({
+        intervalMs: parseIntervalMs(interval),
+        handler,
+        immediate: options.immediate !== false
+      });
       return bot;
     },
 
@@ -56,6 +78,17 @@ export function createBot() {
         break;
       case "agent:start":
         {
+          if (!acceptsAgentStart(msg.config)) {
+            log("agent.start.ignored", {
+              agentId: msg.agentId,
+              runtime: msg.config?.runtime,
+              model: msg.config?.model,
+              expectedModel: modelId
+            });
+            connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
+            sendActivity(msg.agentId, "offline", "RaftBot model mismatch", msg.launchId);
+            break;
+          }
           const profile = await loadAgentProfile(msg.agentId);
           const mentionNames = buildMentionNames(profile, botOptions);
           log("agent.start", {
@@ -73,14 +106,19 @@ export function createBot() {
             detail: "RaftBot ready",
             clientSeq: 1,
             profile,
-            mentionNames
+            mentionNames,
+            jobs: []
           });
           connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
           sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
+          await runStartHandlers(msg.agentId);
+          startScheduledJobs(msg.agentId);
           break;
         }
       case "agent:stop":
         log("agent.stop", { agentId: msg.agentId, launchId: msg.launchId });
+        await runStopHandlers(msg.agentId);
+        stopScheduledJobs(msg.agentId);
         agents.delete(msg.agentId);
         connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
         break;
@@ -199,7 +237,7 @@ export function createBot() {
 
   function createContext(msg, event, parsed) {
     return {
-      agentId: msg.agentId,
+      ...createAgentContext(msg.agentId),
       event,
       command: parsed?.name ?? null,
       args: parsed?.args ?? [],
@@ -213,6 +251,17 @@ export function createBot() {
         await agentApi.sendMessage(msg.agentId, event.replyTarget, text, {
           seenUpToSeq: msg.seq
         });
+      }
+    };
+  }
+
+  function createAgentContext(agentId) {
+    return {
+      agentId,
+      profile: {
+        get: () => agentApi.getAgentProfile(agentId),
+        update: (input) => agentApi.updateProfile(agentId, input),
+        setAvatar: (input) => agentApi.updateAvatar(agentId, input)
       }
     };
   }
@@ -283,6 +332,76 @@ export function createBot() {
     }
   }
 
+  function acceptsAgentStart(config) {
+    if (botOptions.acceptAllModels === true) return true;
+    if (!modelId || modelId === "default") return true;
+    return config?.model === modelId;
+  }
+
+  async function runStartHandlers(agentId) {
+    const ctx = createAgentContext(agentId);
+    for (const handler of startHandlers) {
+      await runLifecycleHandler("start", agentId, handler, ctx);
+    }
+  }
+
+  async function runStopHandlers(agentId) {
+    const ctx = createAgentContext(agentId);
+    for (const handler of stopHandlers) {
+      await runLifecycleHandler("stop", agentId, handler, ctx);
+    }
+  }
+
+  async function runLifecycleHandler(kind, agentId, handler, ctx) {
+    try {
+      log(`agent.${kind}.handler.start`, { agentId });
+      await handler(ctx);
+      log(`agent.${kind}.handler.ok`, { agentId });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log(`agent.${kind}.handler.failed`, { agentId, detail });
+      sendActivity(agentId, "error", detail);
+    }
+  }
+
+  function startScheduledJobs(agentId) {
+    const state = agents.get(agentId);
+    if (!state || scheduledJobs.length === 0) return;
+    for (const job of scheduledJobs) {
+      const runner = createScheduledRunner(agentId, job);
+      const timer = setInterval(runner, job.intervalMs);
+      timer.unref?.();
+      state.jobs.push(timer);
+      if (job.immediate) void runner();
+    }
+  }
+
+  function stopScheduledJobs(agentId) {
+    const state = agents.get(agentId);
+    if (!state) return;
+    for (const timer of state.jobs ?? []) clearInterval(timer);
+    state.jobs = [];
+  }
+
+  function createScheduledRunner(agentId, job) {
+    let running = false;
+    return async () => {
+      if (running || !agents.has(agentId)) return;
+      running = true;
+      try {
+        log("agent.job.start", { agentId, intervalMs: job.intervalMs });
+        await job.handler(createAgentContext(agentId));
+        log("agent.job.ok", { agentId, intervalMs: job.intervalMs });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log("agent.job.failed", { agentId, intervalMs: job.intervalMs, detail });
+        sendActivity(agentId, "error", detail);
+      } finally {
+        running = false;
+      }
+    };
+  }
+
   return bot;
 }
 
@@ -296,6 +415,22 @@ function parseRuntimeIds(options) {
     return options.runtimeIds.split(",").map((item) => item.trim()).filter(Boolean);
   }
   return [options.runtimeId ?? "raftbot"];
+}
+
+function parseIntervalMs(interval) {
+  if (typeof interval === "number" && Number.isFinite(interval) && interval > 0) return interval;
+  const match = String(interval).trim().match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/);
+  if (!match) {
+    throw new Error(`Invalid interval "${interval}". Use a positive number of ms or strings like 30s, 1m, 2h.`);
+  }
+  const value = Number(match[1]);
+  const unit = match[2];
+  const multiplier = unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
+  const ms = value * multiplier;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw new Error(`Invalid interval "${interval}".`);
+  }
+  return ms;
 }
 
 function normalizeMessageEvent(msg, options = {}, agentState = null) {

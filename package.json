@@ -11,7 +11,7 @@
     ".": "./src/index.js"
   },
   "scripts": {
-    "check": "node --check src/*.js && node --check examples/prod-db-operator/index.js"
+    "check": "node --check src/*.js && node --check examples/prod-db-operator/index.js && node --check examples/clock-avatar-bot/*.js"
   },
   "dependencies": {
     "ws": "^8.20.0"
