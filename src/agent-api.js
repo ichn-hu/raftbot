@@ -16,6 +16,35 @@ export class AgentApiClient {
       seenUpToSeq: options.seenUpToSeq,
       contentLength: content.length
     });
+    const body = {
+      target,
+      content,
+      draftReholdCount: 0,
+      ...Number.isInteger(options.seenUpToSeq) && options.seenUpToSeq > 0 ? { seenUpToSeq: options.seenUpToSeq } : {}
+    };
+    const first = await this.postSend(agentId, credential, body);
+    if (first?.state !== "held") {
+      log("agent_api.send.ok", { agentId, target, messageId: first.messageId });
+      return first;
+    }
+    log("agent_api.send.held", { agentId, target, seenUpToSeq: first.seenUpToSeq });
+    const retry = await this.postSend(agentId, credential, {
+      target,
+      content,
+      draftReholdCount: 1,
+      sendDraft: true,
+      continueAnyway: true,
+      ...Number.isInteger(first.seenUpToSeq) && first.seenUpToSeq > 0 ? { seenUpToSeq: first.seenUpToSeq } : {}
+    });
+    if (retry?.state === "held") {
+      log("agent_api.send.rehold", { agentId, target, seenUpToSeq: retry.seenUpToSeq });
+      throw new Error(`send_message_held: ${JSON.stringify(retry).slice(0, 500)}`);
+    }
+    log("agent_api.send.ok", { agentId, target, messageId: retry.messageId, freshnessRetry: true });
+    return retry;
+  }
+
+  async postSend(agentId, credential, body) {
     const res = await fetch(new URL("/internal/agent-api/send", this.serverUrl), {
       method: "POST",
       headers: {
@@ -24,25 +53,14 @@ export class AgentApiClient {
         "X-Agent-Id": agentId,
         "X-Slock-Client": "raftbot"
       },
-      body: JSON.stringify({
-        target,
-        content,
-        draftReholdCount: 0,
-        ...Number.isInteger(options.seenUpToSeq) && options.seenUpToSeq > 0 ? { seenUpToSeq: options.seenUpToSeq } : {}
-      })
+      body: JSON.stringify(body)
     });
     if (!res.ok) {
       const detail = await safeErrorDetail(res);
-      log("agent_api.send.failed", { agentId, target, status: res.status, detail });
+      log("agent_api.send.failed", { agentId, target: body.target, status: res.status, detail });
       throw new Error(`send_message_failed: HTTP ${res.status} ${detail}`);
     }
-    const body = await res.json().catch(() => ({}));
-    if (body?.state === "held") {
-      log("agent_api.send.held", { agentId, target, seenUpToSeq: body.seenUpToSeq });
-      throw new Error(`send_message_held: ${JSON.stringify(body).slice(0, 500)}`);
-    }
-    log("agent_api.send.ok", { agentId, target, messageId: body.messageId });
-    return body;
+    return res.json().catch(() => ({}));
   }
 
   async updateProfile(agentId, input) {

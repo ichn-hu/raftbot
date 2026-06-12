@@ -112,6 +112,8 @@ interface BotContext {
 
 Message command contexts additionally include `event`, `command`, `args`, and `reply()`. Lifecycle and scheduled contexts omit message-specific fields.
 
+`ctx.reply()` is command-scoped. If Slock's human-facing freshness guard holds the first send because newer messages arrived, the framework retries the same deterministic reply with the server-returned `seenUpToSeq` and `continueAnyway` semantics instead of surfacing a draft workflow to bot code.
+
 ## Workspace And State
 
 RaftBot mirrors Slock daemon's per-Agent workspace model. Each running Agent gets a local workspace directory:

@@ -40,11 +40,23 @@ export function createClockAvatarBot(options = {}) {
   bot.command("settz", async (ctx) => {
     const zone = ctx.args.join(" ").trim();
     if (!zone) {
-      await ctx.reply("Usage: /settz <IANA timezone>\nExample: /settz Asia/Shanghai");
+      await ctx.reply([
+        "I need a timezone name.",
+        "",
+        "Usage: /settz <IANA timezone>",
+        "Examples: /settz UTC, /settz Asia/Shanghai, /settz America/Los_Angeles"
+      ].join("\n"));
       return;
     }
     if (!isValidTimeZone(zone)) {
-      await ctx.reply(`Invalid timezone: ${zone}\nUse an IANA timezone such as UTC, Asia/Shanghai, or America/Los_Angeles.`);
+      await ctx.reply([
+        `I don't recognize "${zone}" as an IANA timezone.`,
+        "",
+        "Try one of these:",
+        "/settz UTC",
+        "/settz Asia/Shanghai",
+        "/settz America/Los_Angeles"
+      ].join("\n"));
       return;
     }
     await ctx.state.set("timezone", zone);
@@ -61,7 +73,7 @@ export function createClockAvatarBot(options = {}) {
     const minuteKey = formatMinuteKey(now, timeZone);
     if (lastMinuteByAgent.get(ctx.agentId) === minuteKey) return;
 
-    const png = renderClockPng(now);
+    const png = renderClockPng(now, { timeZone });
     await ctx.profile.setAvatar({
       filename: "clock-avatar.png",
       mimeType: "image/png",

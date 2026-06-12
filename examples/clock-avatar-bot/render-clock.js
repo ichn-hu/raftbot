@@ -22,10 +22,11 @@ const digitSegments = {
 
 let pixels = null;
 
-export function renderClockPng(now = new Date()) {
+export function renderClockPng(now = new Date(), options = {}) {
   if (Number.isNaN(now.getTime())) {
     throw new Error(`Invalid date: ${now}`);
   }
+  const clock = getClockParts(now, options.timeZone);
   pixels = new Uint8ClampedArray(size * size * 4);
   drawBackground();
   fillCircle(cx + 10, cy + 14, 218, [0, 0, 0, 38]);
@@ -33,18 +34,35 @@ export function renderClockPng(now = new Date()) {
   fillCircle(cx, cy, 204, [23, 31, 42, 255]);
   fillCircle(cx, cy, 184, [31, 44, 57, 255]);
   drawTicks();
-  drawHands(now);
+  drawHands(clock);
   drawHub();
-  drawDigitalTime(now);
+  drawDigitalTime(clock);
   return encodePng(size, size, pixels);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const outputPath = process.argv[2] ?? "clock-avatar.png";
   const now = process.argv[3] ? new Date(process.argv[3]) : new Date();
+  const timeZone = process.argv[4];
   mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, renderClockPng(now));
+  writeFileSync(outputPath, renderClockPng(now, { timeZone }));
   console.log(outputPath);
+}
+
+export function getClockParts(date, timeZone = "UTC") {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    hours: Number(values.hour),
+    minutes: Number(values.minute),
+    seconds: Number(values.second)
+  };
 }
 
 function drawBackground() {
@@ -86,10 +104,10 @@ function drawTicks() {
   }
 }
 
-function drawHands(date) {
-  const hours = date.getHours() % 12;
-  const minutes = date.getMinutes();
-  const seconds = date.getSeconds();
+function drawHands(clock) {
+  const hours = clock.hours % 12;
+  const minutes = clock.minutes;
+  const seconds = clock.seconds;
   const hourAngle = ((hours + minutes / 60) / 12) * Math.PI * 2 - Math.PI / 2;
   const minuteAngle = ((minutes + seconds / 60) / 60) * Math.PI * 2 - Math.PI / 2;
   const secondAngle = (seconds / 60) * Math.PI * 2 - Math.PI / 2;
@@ -104,8 +122,8 @@ function drawHub() {
   fillCircle(cx, cy, 10, [239, 95, 85, 255]);
 }
 
-function drawDigitalTime(date) {
-  const text = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+function drawDigitalTime(clock) {
+  const text = `${String(clock.hours).padStart(2, "0")}:${String(clock.minutes).padStart(2, "0")}`;
   const digitW = 34;
   const digitH = 58;
   const gap = 8;

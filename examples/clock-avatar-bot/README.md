@@ -7,6 +7,7 @@ Behavior:
 - Advertises the visible model name `Clock Bot` while the daemon is connected.
 - Does not update any profile until Slock starts an Agent whose model is `clock-bot`.
 - Renders a 512x512 PNG clock avatar in code.
+- Renders the analog hands and digital display in the Agent's configured timezone.
 - Uploads the PNG as the Agent avatar.
 - Updates the Agent description to the current minute.
 - Repeats once per minute for each running Agent identity.
