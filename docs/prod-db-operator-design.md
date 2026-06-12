@@ -209,7 +209,7 @@ The MVP uses `node-sql-parser` to parse SQL into an AST with the configured data
 
 A request is read-only only when every parsed statement is provably read-only. The bot currently treats `select`, `show`, `describe`, `desc`, and `explain` AST types as read-only, with extra checks for `SELECT INTO`, locking reads such as `FOR UPDATE`, and non-read-only CTE bodies.
 
-If parsing fails, the bot fails closed: it marks the request as `parse_error`, treats it as write, and requires manager approval. The original SQL is still split into statements for execution after approval, but it will not run without approval unless the parser proved it is read-only.
+If parsing fails, the bot treats that as a user input error: it reports a friendly parse error in the same conversation context, writes an audit entry, and does not execute the SQL or create an approval request. Manager approval is only for syntactically valid SQL that the parser classifies as write-capable.
 
 This parser check is not the only safety boundary. The configured database credentials should still be scoped to the minimum privileges needed for the bot instance.
 

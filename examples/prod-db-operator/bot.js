@@ -66,6 +66,18 @@ export function createProdDbOperatorBot(options = {}) {
       await ctx.reply("No SQL statement found.");
       return;
     }
+    if (classification.parseError) {
+      await writeAudit(ctx, {
+        type: "sql_parse_failed",
+        requester: ctx.event.sender,
+        target: redactConfig(config),
+        sql,
+        statementCount: classification.statements.length,
+        error: classification.parseError
+      });
+      await ctx.reply(formatSqlParseError(classification, config));
+      return;
+    }
 
     if (classification.kind === "read") {
       await runReadOnlySql(ctx, sql, classification, config);
@@ -559,6 +571,15 @@ function formatSqlError(title, err, config, options = {}) {
     lines.push("", "No changes were committed for this failed write transaction.");
   }
   return lines.join("\n");
+}
+
+export function formatSqlParseError(classification, config) {
+  return [
+    "SQL parse error.",
+    `Database: ${describeRedactedTarget(redactConfig(config))}`,
+    "The request was not executed and was not sent for approval.",
+    `Error: ${errorMessage(classification.parseError)}`
+  ].join("\n");
 }
 
 function errorMessage(err) {

@@ -620,7 +620,7 @@ function parseIntervalMs(interval) {
   return ms;
 }
 
-function normalizeMessageEvent(msg, options = {}, agentState = null) {
+export function normalizeMessageEvent(msg, options = {}, agentState = null) {
   const message = msg.message ?? {};
   const target = formatTarget(message);
   const surface = formatSurface(message, target);
@@ -640,26 +640,29 @@ function normalizeMessageEvent(msg, options = {}, agentState = null) {
 }
 
 function formatTarget(message) {
+  const channelType = normalizeChannelType(message.channel_type);
+  const parentChannelType = normalizeChannelType(message.parent_channel_type);
   if (message.target) return message.target;
-  if (message.channel_type === "thread" && message.parent_channel_name) {
+  if (channelType === "thread" && message.parent_channel_name) {
     const shortId = getMessageShortId(message.channel_name);
-    if (message.parent_channel_type === "dm") return `dm:@${message.parent_channel_name}:${shortId}`;
+    if (parentChannelType === "dm") return `dm:@${message.parent_channel_name}:${shortId}`;
     return `#${message.parent_channel_name}:${shortId}`;
   }
-  if (message.channel_type === "dm") return `dm:@${message.channel_name}`;
+  if (channelType === "dm") return `dm:@${message.channel_name}`;
   if (message.channel_name) return `#${message.channel_name}`;
   return "";
 }
 
 function formatReplyTarget(message) {
+  const channelType = normalizeChannelType(message.channel_type);
   if (message.reply_target) return message.reply_target;
-  if (message.channel_type === "thread") return formatTarget(message);
+  if (channelType === "thread") return formatTarget(message);
   if (message.thread_short_id && message.channel_name) {
-    const base = message.channel_type === "dm" ? `dm:@${message.channel_name}` : `#${message.channel_name}`;
+    const base = channelType === "dm" ? `dm:@${message.channel_name}` : `#${message.channel_name}`;
     return `${base}:${message.thread_short_id}`;
   }
   if (message.thread_id && message.channel_name) {
-    const base = message.channel_type === "dm" ? `dm:@${message.channel_name}` : `#${message.channel_name}`;
+    const base = channelType === "dm" ? `dm:@${message.channel_name}` : `#${message.channel_name}`;
     return `${base}:${String(message.thread_id).slice(0, 8)}`;
   }
   const base = formatTarget(message);
@@ -672,21 +675,31 @@ function getMessageShortId(messageId) {
 }
 
 function formatSurface(message, target) {
-  if (message.channel_type === "thread") {
+  const channelType = normalizeChannelType(message.channel_type);
+  const parentChannelType = normalizeChannelType(message.parent_channel_type);
+  if (channelType === "thread") {
     return {
       kind: "thread",
       target,
       threadShortId: getMessageShortId(message.channel_name),
       parent: message.parent_channel_name ? {
-        kind: message.parent_channel_type === "dm" ? "dm" : "channel",
+        kind: parentChannelType === "dm" ? "dm" : "channel",
         name: message.parent_channel_name
       } : null
     };
   }
-  if (message.channel_type === "dm") {
+  if (channelType === "dm" || target.startsWith("dm:")) {
     return { kind: "dm", target, name: message.channel_name ?? "" };
   }
   return { kind: "channel", target, name: message.channel_name ?? "" };
+}
+
+function normalizeChannelType(value) {
+  const channelType = String(value ?? "").trim().toLowerCase();
+  if (channelType === "dm" || channelType === "direct" || channelType === "direct_message") return "dm";
+  if (channelType === "thread") return "thread";
+  if (channelType === "channel") return "channel";
+  return channelType;
 }
 
 function detectAddressing(message, agentState, options = {}) {
