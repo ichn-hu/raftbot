@@ -54,16 +54,33 @@ export class DaemonConnection {
     });
 
     ws.on("message", (data) => {
-      const msg = JSON.parse(data.toString());
+      let msg;
+      try {
+        msg = JSON.parse(data.toString());
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log("daemon.recv.invalid_json", { byteLength: data.byteLength, detail });
+        return;
+      }
       if (msg.type !== "ping") log("daemon.recv", {
         type: msg.type,
         agentId: msg.agentId,
         requestId: msg.requestId,
         runtime: msg.runtime,
         seq: msg.seq,
-        deliveryId: msg.deliveryId
+        deliveryId: msg.deliveryId,
+        wakeMessage: Boolean(msg.wakeMessage),
+        wakeMessageId: msg.wakeMessage?.message_id,
+        wakeMessageSeq: msg.wakeMessage?.seq
       });
-      this.onMessage(msg);
+      try {
+        const result = this.onMessage(msg);
+        if (result && typeof result.catch === "function") {
+          result.catch((err) => this.logDispatchFailed(msg, err));
+        }
+      } catch (err) {
+        this.logDispatchFailed(msg, err);
+      }
     });
 
     ws.on("close", () => {
@@ -77,6 +94,20 @@ export class DaemonConnection {
 
     ws.on("error", () => {
       ws.close();
+    });
+  }
+
+  logDispatchFailed(msg, err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log("daemon.recv.dispatch_failed", {
+      type: msg.type,
+      agentId: msg.agentId,
+      requestId: msg.requestId,
+      runtime: msg.runtime,
+      seq: msg.seq,
+      deliveryId: msg.deliveryId,
+      wakeMessage: Boolean(msg.wakeMessage),
+      detail
     });
   }
 }

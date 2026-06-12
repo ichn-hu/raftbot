@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createStartWakeDelivery,
   formatUnrecognizedDmFallback,
   normalizeMessageEvent,
   parseSlashCommand,
@@ -93,4 +94,27 @@ test("ready message reports currently running agents", () => {
 
   assert.deepEqual(ready.runtimes, ["claude", "codex"]);
   assert.deepEqual(ready.runningAgents, ["agent-a", "agent-b"]);
+});
+
+test("agent start wake messages normalize to local delivery without requiring ack", () => {
+  const delivery = createStartWakeDelivery({
+    agentId: "agent-a",
+    launchId: "launch-1",
+    wakeMessageTransient: true,
+    wakeMessage: {
+      message_id: "msg-1",
+      seq: 123,
+      channel_type: "dm",
+      channel_name: "ichnhu",
+      sender_name: "ichnhu",
+      content: "/help"
+    }
+  });
+
+  assert.equal(delivery.type, "agent:deliver");
+  assert.equal(delivery.agentId, "agent-a");
+  assert.equal(delivery.launchId, "launch-1");
+  assert.equal(delivery.seq, 123);
+  assert.equal(delivery.transient, true);
+  assert.equal(delivery.message.message_id, "msg-1");
 });

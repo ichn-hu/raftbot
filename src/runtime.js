@@ -96,7 +96,7 @@ export async function startBotDaemon(bots, options) {
       }));
     },
     onMessage: (msg) => {
-      void handleDaemonMessage(msg);
+      return handleDaemonMessage(msg);
     }
   });
   connection.connect();
@@ -115,6 +115,7 @@ export async function startBotDaemon(bots, options) {
           } finally {
             if (startingAgents.get(msg.agentId) === startPromise) startingAgents.delete(msg.agentId);
           }
+          if (msg.wakeMessage) await handleStartWakeMessage(msg);
           break;
         }
       case "agent:stop":
@@ -198,6 +199,9 @@ export async function startBotDaemon(bots, options) {
         agentId: msg.agentId,
         runtime: msg.config?.runtime,
         model: msg.config?.model,
+        wakeMessage: Boolean(msg.wakeMessage),
+        wakeMessageId: msg.wakeMessage?.message_id,
+        wakeMessageSeq: msg.wakeMessage?.seq,
         availableModels: models.map((model) => model.id)
       });
       connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
@@ -215,7 +219,10 @@ export async function startBotDaemon(bots, options) {
       botModel: definition.modelId,
       profileName: profile?.name,
       displayName: profile?.displayName,
-      mentionNames
+      mentionNames,
+      wakeMessage: Boolean(msg.wakeMessage),
+      wakeMessageId: msg.wakeMessage?.message_id,
+      wakeMessageSeq: msg.wakeMessage?.seq
     });
     agents.set(msg.agentId, {
       bot: definition,
@@ -235,8 +242,26 @@ export async function startBotDaemon(bots, options) {
     startScheduledJobs(msg.agentId);
   }
 
-  async function handleDelivery(msg) {
-    const startPromise = startingAgents.get(msg.agentId);
+  async function handleStartWakeMessage(startMsg) {
+    if (!agents.has(startMsg.agentId)) return;
+    const deliveryMsg = createStartWakeDelivery(startMsg);
+    log("agent.start.wake.deliver", {
+      agentId: deliveryMsg.agentId,
+      launchId: deliveryMsg.launchId,
+      seq: deliveryMsg.seq,
+      deliveryId: deliveryMsg.deliveryId,
+      messageId: deliveryMsg.message?.message_id,
+      sender: deliveryMsg.message?.sender_name,
+      channelType: deliveryMsg.message?.channel_type,
+      channelName: deliveryMsg.message?.channel_name
+    });
+    await handleDelivery(deliveryMsg, { ack: false, waitForStart: false });
+  }
+
+  async function handleDelivery(msg, options = {}) {
+    const shouldAck = options.ack !== false;
+    const shouldWaitForStart = options.waitForStart !== false;
+    const startPromise = shouldWaitForStart ? startingAgents.get(msg.agentId) : null;
     if (startPromise) {
       log("agent.deliver.wait_for_start", { agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
       await startPromise.catch(() => {});
@@ -244,7 +269,7 @@ export async function startBotDaemon(bots, options) {
     const agentState = agents.get(msg.agentId);
     if (!agentState) {
       log("agent.deliver.unknown_agent", { agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
-      ackDelivery(msg);
+      if (shouldAck) ackDelivery(msg);
       return;
     }
     sendActivity(msg.agentId, "working", "Message received", msg.launchId);
@@ -302,7 +327,7 @@ export async function startBotDaemon(bots, options) {
       log("command.failed", { command: parsed?.name ?? null, agentId: msg.agentId, messageId: event.id, detail });
       sendActivity(msg.agentId, "error", detail, msg.launchId);
     } finally {
-      ackDelivery(msg);
+      if (shouldAck) ackDelivery(msg);
     }
   }
 
@@ -650,6 +675,24 @@ function parseIntervalMs(interval) {
     throw new Error(`Invalid interval "${interval}".`);
   }
   return ms;
+}
+
+export function createStartWakeDelivery(startMsg) {
+  const wakeMessage = startMsg.wakeMessage ?? {};
+  return {
+    type: "agent:deliver",
+    agentId: startMsg.agentId,
+    launchId: startMsg.launchId,
+    seq: normalizeSeq(startMsg.wakeSeq ?? wakeMessage.seq),
+    deliveryId: startMsg.wakeDeliveryId ?? startMsg.deliveryId ?? wakeMessage.deliveryId ?? wakeMessage.delivery_id,
+    transient: startMsg.wakeMessageTransient === true,
+    message: wakeMessage
+  };
+}
+
+function normalizeSeq(value) {
+  const seq = Number(value);
+  return Number.isFinite(seq) && seq > 0 ? seq : 0;
 }
 
 export function normalizeMessageEvent(msg, options = {}, agentState = null) {
