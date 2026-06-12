@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from "../../src/index.js";
-import { createProdDbOperatorBot } from "./bot.js";
+import { createClockAvatarBot } from "./bot.js";
 
 const options = parseArgs();
-const bot = createProdDbOperatorBot(options);
+const bot = createClockAvatarBot(options);
 
 await bot.start(options);

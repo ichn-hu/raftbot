@@ -16,6 +16,35 @@ export class AgentApiClient {
       seenUpToSeq: options.seenUpToSeq,
       contentLength: content.length
     });
+    const body = {
+      target,
+      content,
+      draftReholdCount: 0,
+      ...Number.isInteger(options.seenUpToSeq) && options.seenUpToSeq > 0 ? { seenUpToSeq: options.seenUpToSeq } : {}
+    };
+    const first = await this.postSend(agentId, credential, body);
+    if (first?.state !== "held") {
+      log("agent_api.send.ok", { agentId, target, messageId: first.messageId });
+      return first;
+    }
+    log("agent_api.send.held", { agentId, target, seenUpToSeq: first.seenUpToSeq });
+    const retry = await this.postSend(agentId, credential, {
+      target,
+      content,
+      draftReholdCount: 1,
+      sendDraft: true,
+      continueAnyway: true,
+      ...Number.isInteger(first.seenUpToSeq) && first.seenUpToSeq > 0 ? { seenUpToSeq: first.seenUpToSeq } : {}
+    });
+    if (retry?.state === "held") {
+      log("agent_api.send.rehold", { agentId, target, seenUpToSeq: retry.seenUpToSeq });
+      throw new Error(`send_message_held: ${JSON.stringify(retry).slice(0, 500)}`);
+    }
+    log("agent_api.send.ok", { agentId, target, messageId: retry.messageId, freshnessRetry: true });
+    return retry;
+  }
+
+  async postSend(agentId, credential, body) {
     const res = await fetch(new URL("/internal/agent-api/send", this.serverUrl), {
       method: "POST",
       headers: {
@@ -24,25 +53,72 @@ export class AgentApiClient {
         "X-Agent-Id": agentId,
         "X-Slock-Client": "raftbot"
       },
-      body: JSON.stringify({
-        target,
-        content,
-        draftReholdCount: 0,
-        ...Number.isInteger(options.seenUpToSeq) && options.seenUpToSeq > 0 ? { seenUpToSeq: options.seenUpToSeq } : {}
-      })
+      body: JSON.stringify(body)
     });
     if (!res.ok) {
       const detail = await safeErrorDetail(res);
-      log("agent_api.send.failed", { agentId, target, status: res.status, detail });
+      log("agent_api.send.failed", { agentId, target: body.target, status: res.status, detail });
       throw new Error(`send_message_failed: HTTP ${res.status} ${detail}`);
     }
-    const body = await res.json().catch(() => ({}));
-    if (body?.state === "held") {
-      log("agent_api.send.held", { agentId, target, seenUpToSeq: body.seenUpToSeq });
-      throw new Error(`send_message_held: ${JSON.stringify(body).slice(0, 500)}`);
+    return res.json().catch(() => ({}));
+  }
+
+  async updateProfile(agentId, input) {
+    const body = {};
+    if (typeof input.description === "string") body.description = input.description;
+    if (typeof input.displayName === "string") body.displayName = input.displayName;
+    if (typeof input.avatarUrl === "string") body.avatarUrl = input.avatarUrl;
+    if (Object.keys(body).length === 0) {
+      throw new Error("profile_update_failed: no profile fields provided");
     }
-    log("agent_api.send.ok", { agentId, target, messageId: body.messageId });
-    return body;
+    log("agent_api.profile.update.start", { agentId, fields: Object.keys(body) });
+    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/profile`, this.serverUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.machineApiKey}`,
+        "Content-Type": "application/json",
+        "X-Agent-Id": agentId,
+        "X-Slock-Client": "raftbot"
+      },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const detail = await safeErrorDetail(res);
+      log("agent_api.profile.update.failed", { agentId, status: res.status, detail });
+      throw new Error(`profile_update_failed: HTTP ${res.status} ${detail}`);
+    }
+    const profile = await res.json();
+    log("agent_api.profile.update.ok", { agentId });
+    return profile;
+  }
+
+  async updateAvatar(agentId, input) {
+    const filename = input.filename ?? "avatar.png";
+    const mimeType = input.mimeType ?? "image/png";
+    const bytes = input.bytes instanceof Uint8Array ? input.bytes : Uint8Array.from(input.bytes ?? []);
+    if (bytes.byteLength === 0) {
+      throw new Error("avatar_update_failed: empty avatar bytes");
+    }
+    const form = new FormData();
+    form.append("avatar", new Blob([bytes], { type: mimeType }), filename);
+    log("agent_api.avatar.update.start", { agentId, filename, mimeType, size: bytes.byteLength });
+    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/profile/avatar`, this.serverUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.machineApiKey}`,
+        "X-Agent-Id": agentId,
+        "X-Slock-Client": "raftbot"
+      },
+      body: form
+    });
+    if (!res.ok) {
+      const detail = await safeErrorDetail(res);
+      log("agent_api.avatar.update.failed", { agentId, status: res.status, detail });
+      throw new Error(`avatar_update_failed: HTTP ${res.status} ${detail}`);
+    }
+    const profile = await res.json();
+    log("agent_api.avatar.update.ok", { agentId });
+    return profile;
   }
 
   async getAgentCredential(agentId) {

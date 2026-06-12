@@ -1,53 +1,104 @@
 import { DaemonConnection, readyMessage } from "./daemon-connection.js";
 import { AgentApiClient } from "./agent-api.js";
 import { log } from "./logger.js";
+import { JsonStateStore } from "./state-store.js";
+import os from "node:os";
+import path from "node:path";
 
-export function createBot() {
-  const commands = new Map();
-  const messageHandlers = new Set();
-  const agents = new Map();
-  let connection = null;
-  let agentApi = null;
-  let runtimeLabel = "RaftBot";
-  let modelId = "default";
-  let botOptions = {};
+const BOT_DEFINITION = Symbol("raftbot.definition");
+
+export function createBot(options = {}) {
+  const definition = {
+    commands: new Map(),
+    messageHandlers: new Set(),
+    startHandlers: new Set(),
+    stopHandlers: new Set(),
+    scheduledJobs: [],
+    modelId: null,
+    runtimeLabel: null,
+    options: {}
+  };
+  applyBotMetadata(definition, options);
 
   const bot = {
+    model(metadata) {
+      applyBotMetadata(definition, metadata);
+      return bot;
+    },
+
     command(name, handler) {
-      commands.set(normalizeCommand(name), handler);
+      definition.commands.set(normalizeCommand(name), handler);
       return bot;
     },
 
     onMessage(handler) {
-      messageHandlers.add(handler);
+      definition.messageHandlers.add(handler);
+      return bot;
+    },
+
+    onStart(handler) {
+      definition.startHandlers.add(handler);
+      return bot;
+    },
+
+    onStop(handler) {
+      definition.stopHandlers.add(handler);
+      return bot;
+    },
+
+    every(interval, handler, options = {}) {
+      definition.scheduledJobs.push({
+        intervalMs: parseIntervalMs(interval),
+        handler,
+        immediate: options.immediate !== false
+      });
       return bot;
     },
 
     async start(options) {
-      botOptions = options;
-      runtimeLabel = options.runtimeLabel ?? options.runtimeId ?? "RaftBot";
-      modelId = options.modelId ?? "default";
-      agentApi = new AgentApiClient({
-        serverUrl: options.serverUrl,
-        apiKey: options.apiKey
-      });
-      connection = new DaemonConnection({
-        serverUrl: options.serverUrl,
-        apiKey: options.apiKey,
-        onOpen: () => {
-          connection.send(readyMessage({
-            daemonVersion: options.daemonVersion,
-            runtimeId: options.runtimeId,
-            runtimes: parseRuntimeIds(options)
-          }));
-        },
-        onMessage: (msg) => {
-          void handleDaemonMessage(msg);
-        }
-      });
-      connection.connect();
+      await startBotDaemon([bot], options);
     }
   };
+
+  Object.defineProperty(bot, BOT_DEFINITION, { value: definition });
+  return bot;
+}
+
+export async function startBotDaemon(bots, options) {
+  const definitions = prepareBotDefinitions(bots, options);
+  const botsByModel = new Map(definitions.map((definition) => [definition.modelId, definition]));
+  const models = definitions.map((definition) => ({
+    id: definition.modelId,
+    label: definition.runtimeLabel,
+    verified: true
+  }));
+  const defaultModelId = options.defaultModelId && botsByModel.has(options.defaultModelId)
+    ? options.defaultModelId
+    : definitions[0].modelId;
+  const agents = new Map();
+  const startingAgents = new Map();
+  const stateStore = new JsonStateStore(resolveWorkspaceRoot(options));
+  const agentApi = new AgentApiClient({
+    serverUrl: options.serverUrl,
+    apiKey: options.apiKey
+  });
+  let connection = null;
+
+  connection = new DaemonConnection({
+    serverUrl: options.serverUrl,
+    apiKey: options.apiKey,
+    onOpen: () => {
+      connection.send(readyMessage({
+        daemonVersion: options.daemonVersion,
+        runtimeId: options.runtimeId,
+        runtimes: parseRuntimeIds(options)
+      }));
+    },
+    onMessage: (msg) => {
+      void handleDaemonMessage(msg);
+    }
+  });
+  connection.connect();
 
   async function handleDaemonMessage(msg) {
     switch (msg.type) {
@@ -56,31 +107,19 @@ export function createBot() {
         break;
       case "agent:start":
         {
-          const profile = await loadAgentProfile(msg.agentId);
-          const mentionNames = buildMentionNames(profile, botOptions);
-          log("agent.start", {
-            agentId: msg.agentId,
-            launchId: msg.launchId,
-            runtime: msg.config?.runtime,
-            model: msg.config?.model,
-            profileName: profile?.name,
-            displayName: profile?.displayName,
-            mentionNames
-          });
-          agents.set(msg.agentId, {
-            launchId: msg.launchId,
-            activity: "online",
-            detail: "RaftBot ready",
-            clientSeq: 1,
-            profile,
-            mentionNames
-          });
-          connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
-          sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
+          const startPromise = handleAgentStart(msg);
+          startingAgents.set(msg.agentId, startPromise);
+          try {
+            await startPromise;
+          } finally {
+            if (startingAgents.get(msg.agentId) === startPromise) startingAgents.delete(msg.agentId);
+          }
           break;
         }
       case "agent:stop":
         log("agent.stop", { agentId: msg.agentId, launchId: msg.launchId });
+        await runStopHandlers(msg.agentId);
+        stopScheduledJobs(msg.agentId);
         agents.delete(msg.agentId);
         connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
         break;
@@ -133,12 +172,17 @@ export function createBot() {
         });
         break;
       case "machine:runtime_models:detect":
-        log("runtime.models.detect", { runtime: msg.runtime, requestId: msg.requestId, modelId, runtimeLabel });
+        log("runtime.models.detect", {
+          runtime: msg.runtime,
+          requestId: msg.requestId,
+          models: models.map((model) => model.id),
+          defaultModelId
+        });
         connection.send({
           type: "machine:runtime_models:result",
           requestId: msg.requestId,
-          models: [{ id: modelId, label: runtimeLabel, verified: true }],
-          default: modelId
+          models,
+          default: defaultModelId
         });
         break;
       default:
@@ -146,14 +190,69 @@ export function createBot() {
     }
   }
 
+  async function handleAgentStart(msg) {
+    const definition = selectBotForAgentStart(msg.config);
+    if (!definition) {
+      log("agent.start.ignored", {
+        agentId: msg.agentId,
+        runtime: msg.config?.runtime,
+        model: msg.config?.model,
+        availableModels: models.map((model) => model.id)
+      });
+      connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
+      sendActivity(msg.agentId, "offline", "RaftBot model mismatch", msg.launchId);
+      return;
+    }
+    const botOptions = mergedBotOptions(definition, options);
+    const profile = await loadAgentProfile(msg.agentId);
+    const mentionNames = buildMentionNames(profile, botOptions);
+    log("agent.start", {
+      agentId: msg.agentId,
+      launchId: msg.launchId,
+      runtime: msg.config?.runtime,
+      model: msg.config?.model,
+      botModel: definition.modelId,
+      profileName: profile?.name,
+      displayName: profile?.displayName,
+      mentionNames
+    });
+    agents.set(msg.agentId, {
+      bot: definition,
+      botOptions,
+      launchId: msg.launchId,
+      activity: "online",
+      detail: "RaftBot ready",
+      clientSeq: 1,
+      profile,
+      mentionNames,
+      workspacePath: stateStore.forAgent(msg.agentId).workspacePath,
+      jobs: []
+    });
+    connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
+    sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
+    await runStartHandlers(msg.agentId);
+    startScheduledJobs(msg.agentId);
+  }
+
   async function handleDelivery(msg) {
+    const startPromise = startingAgents.get(msg.agentId);
+    if (startPromise) {
+      log("agent.deliver.wait_for_start", { agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
+      await startPromise.catch(() => {});
+    }
+    const agentState = agents.get(msg.agentId);
+    if (!agentState) {
+      log("agent.deliver.unknown_agent", { agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
+      ackDelivery(msg);
+      return;
+    }
     sendActivity(msg.agentId, "working", "Message received", msg.launchId);
-    const event = normalizeMessageEvent(msg, botOptions, agents.get(msg.agentId));
+    const event = normalizeMessageEvent(msg, agentState.botOptions, agentState);
     const parsed = parseSlashCommand(event.commandText);
     event.command = parsed;
     const ctx = createContext(msg, event, parsed);
     try {
-      for (const messageHandler of messageHandlers) {
+      for (const messageHandler of agentState.bot.messageHandlers) {
         await messageHandler(ctx);
       }
       if (!parsed) {
@@ -172,7 +271,7 @@ export function createBot() {
         sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
         return;
       }
-      const handler = commands.get(parsed.name);
+      const handler = agentState.bot.commands.get(parsed.name);
       if (!handler) {
         log("command.skip", { reason: "unknown_command", command: parsed.name, agentId: msg.agentId, messageId: event.id });
         sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
@@ -181,6 +280,7 @@ export function createBot() {
       log("command.start", {
         command: parsed.name,
         agentId: msg.agentId,
+        botModel: agentState.bot.modelId,
         messageId: event.id,
         replyTarget: event.replyTarget,
         seenUpToSeq: msg.seq
@@ -199,7 +299,7 @@ export function createBot() {
 
   function createContext(msg, event, parsed) {
     return {
-      agentId: msg.agentId,
+      ...createAgentContext(msg.agentId),
       event,
       command: parsed?.name ?? null,
       args: parsed?.args ?? [],
@@ -213,6 +313,22 @@ export function createBot() {
         await agentApi.sendMessage(msg.agentId, event.replyTarget, text, {
           seenUpToSeq: msg.seq
         });
+      }
+    };
+  }
+
+  function createAgentContext(agentId) {
+    const state = stateStore.forAgent(agentId);
+    return {
+      agentId,
+      workspace: {
+        path: state.workspacePath
+      },
+      state,
+      profile: {
+        get: () => agentApi.getAgentProfile(agentId),
+        update: (input) => agentApi.updateProfile(agentId, input),
+        setAvatar: (input) => agentApi.updateAvatar(agentId, input)
       }
     };
   }
@@ -283,7 +399,125 @@ export function createBot() {
     }
   }
 
-  return bot;
+  function selectBotForAgentStart(config) {
+    if (options.acceptAllModels === true && definitions.length === 1) return definitions[0];
+    if (config?.model && botsByModel.has(config.model)) return botsByModel.get(config.model);
+    if (!config?.model && botsByModel.has(defaultModelId)) return botsByModel.get(defaultModelId);
+    return null;
+  }
+
+  async function runStartHandlers(agentId) {
+    const state = agents.get(agentId);
+    if (!state) return;
+    const ctx = createAgentContext(agentId);
+    for (const handler of state.bot.startHandlers) {
+      await runLifecycleHandler("start", agentId, handler, ctx);
+    }
+  }
+
+  async function runStopHandlers(agentId) {
+    const state = agents.get(agentId);
+    if (!state) return;
+    const ctx = createAgentContext(agentId);
+    for (const handler of state.bot.stopHandlers) {
+      await runLifecycleHandler("stop", agentId, handler, ctx);
+    }
+  }
+
+  async function runLifecycleHandler(kind, agentId, handler, ctx) {
+    try {
+      log(`agent.${kind}.handler.start`, { agentId });
+      await handler(ctx);
+      log(`agent.${kind}.handler.ok`, { agentId });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log(`agent.${kind}.handler.failed`, { agentId, detail });
+      sendActivity(agentId, "error", detail);
+    }
+  }
+
+  function startScheduledJobs(agentId) {
+    const state = agents.get(agentId);
+    if (!state || state.bot.scheduledJobs.length === 0) return;
+    for (const job of state.bot.scheduledJobs) {
+      const runner = createScheduledRunner(agentId, job);
+      const timer = setInterval(runner, job.intervalMs);
+      timer.unref?.();
+      state.jobs.push(timer);
+      if (job.immediate) void runner();
+    }
+  }
+
+  function stopScheduledJobs(agentId) {
+    const state = agents.get(agentId);
+    if (!state) return;
+    for (const timer of state.jobs ?? []) clearInterval(timer);
+    state.jobs = [];
+  }
+
+  function createScheduledRunner(agentId, job) {
+    let running = false;
+    return async () => {
+      if (running || !agents.has(agentId)) return;
+      running = true;
+      try {
+        log("agent.job.start", { agentId, intervalMs: job.intervalMs });
+        await job.handler(createAgentContext(agentId));
+        log("agent.job.ok", { agentId, intervalMs: job.intervalMs });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log("agent.job.failed", { agentId, intervalMs: job.intervalMs, detail });
+        sendActivity(agentId, "error", detail);
+      } finally {
+        running = false;
+      }
+    };
+  }
+}
+
+function applyBotMetadata(definition, options = {}) {
+  if (typeof options.modelId === "string" && options.modelId.trim()) definition.modelId = options.modelId.trim();
+  if (typeof options.runtimeLabel === "string" && options.runtimeLabel.trim()) definition.runtimeLabel = options.runtimeLabel.trim();
+  if (typeof options.label === "string" && options.label.trim()) definition.runtimeLabel = options.label.trim();
+  definition.options = {
+    ...definition.options,
+    ...options
+  };
+}
+
+function prepareBotDefinitions(bots, options) {
+  if (!Array.isArray(bots) || bots.length === 0) {
+    throw new Error("startBotDaemon requires at least one bot");
+  }
+  const definitions = bots.map(getBotDefinition);
+  if (definitions.length === 1) {
+    applyBotMetadata(definitions[0], options);
+  }
+  const seen = new Set();
+  for (const definition of definitions) {
+    if (!definition.modelId) {
+      throw new Error("Each bot must define modelId before starting a multi-bot daemon");
+    }
+    if (seen.has(definition.modelId)) {
+      throw new Error(`Duplicate bot modelId: ${definition.modelId}`);
+    }
+    seen.add(definition.modelId);
+    if (!definition.runtimeLabel) definition.runtimeLabel = definition.modelId;
+  }
+  return definitions;
+}
+
+function getBotDefinition(bot) {
+  const definition = bot?.[BOT_DEFINITION];
+  if (!definition) throw new Error("Invalid bot passed to startBotDaemon");
+  return definition;
+}
+
+function mergedBotOptions(definition, daemonOptions) {
+  return {
+    ...daemonOptions,
+    ...definition.options
+  };
 }
 
 function normalizeCommand(name) {
@@ -296,6 +530,31 @@ function parseRuntimeIds(options) {
     return options.runtimeIds.split(",").map((item) => item.trim()).filter(Boolean);
   }
   return [options.runtimeId ?? "raftbot"];
+}
+
+function resolveWorkspaceRoot(options) {
+  return options.workspaceRoot || process.env.RAFTBOT_WORKSPACE_ROOT || path.join(resolveSlockHome(), "agents");
+}
+
+function resolveSlockHome() {
+  const raw = process.env.SLOCK_HOME?.trim();
+  return path.resolve(raw || path.join(os.homedir(), ".slock"));
+}
+
+function parseIntervalMs(interval) {
+  if (typeof interval === "number" && Number.isFinite(interval) && interval > 0) return interval;
+  const match = String(interval).trim().match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/);
+  if (!match) {
+    throw new Error(`Invalid interval "${interval}". Use a positive number of ms or strings like 30s, 1m, 2h.`);
+  }
+  const value = Number(match[1]);
+  const unit = match[2];
+  const multiplier = unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
+  const ms = value * multiplier;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw new Error(`Invalid interval "${interval}".`);
+  }
+  return ms;
 }
 
 function normalizeMessageEvent(msg, options = {}, agentState = null) {
