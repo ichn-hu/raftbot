@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { resolveTargetConfig, snapshotExecutionTarget } from "./bot.js";
+import { createProdDbOperatorBot, formatSqlParseError, resolveTargetConfig, snapshotExecutionTarget } from "./bot.js";
 import { createDatabaseAdapter, readStatementForExecution } from "./db-adapters.js";
 import { createResultResponse } from "./result-renderer.js";
 import { classifySql } from "./sql-utils.js";
@@ -16,11 +16,61 @@ test("classifies read-only and write SQL", () => {
   assert.deepEqual(classifySql("delete from users", { driver: "mysql" }).risks, ["delete_without_where"]);
 });
 
-test("fails closed when SQL cannot be parsed as read-only", () => {
-  const classification = classifySql("pragma table_info(users)", { driver: "sqlite" });
+test("records parser failures so command handling can return a parse error", () => {
+  const classification = classifySql("select", { driver: "sqlite" });
   assert.equal(classification.kind, "write");
   assert.deepEqual(classification.risks, ["parse_error"]);
   assert.ok(classification.parseError);
+
+  const message = formatSqlParseError(classification, {
+    driver: "sqlite",
+    sqlitePath: "/tmp/app.sqlite",
+    databaseUrl: ""
+  });
+  assert.match(message, /SQL parse error/);
+  assert.match(message, /not sent for approval/);
+  assert.match(message, /sqlite:\/tmp\/app\.sqlite/);
+});
+
+test("/sql parse errors return an error instead of opening approval", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
+  try {
+    const bot = createProdDbOperatorBot();
+    const handler = getCommandHandler(bot, "sql");
+    const stateValues = new Map();
+    const replies = [];
+    const ctx = {
+      args: ["select"],
+      agentId: "agent-1",
+      agent: { creator: { name: "ichnhu" } },
+      workspace: { path: dir },
+      event: {
+        sender: "@ichnhu",
+        replyTarget: "#raftbot-devs:ffe898da",
+        surface: { kind: "thread" }
+      },
+      state: {
+        async get(key, fallback) {
+          return stateValues.has(key) ? stateValues.get(key) : fallback;
+        },
+        async set(key, value) {
+          stateValues.set(key, value);
+        }
+      },
+      async reply(message) {
+        replies.push(message);
+      }
+    };
+
+    await handler(ctx);
+
+    assert.equal(replies.length, 1);
+    assert.match(replies[0], /SQL parse error/);
+    assert.match(replies[0], /not sent for approval/);
+    assert.equal(stateValues.has("prodDbOperator.requests"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("sqlite adapter commits successful transaction and rolls back failed one", async () => {
@@ -190,3 +240,14 @@ test("result renderer uses inline markdown for small results and attachments for
   assert.equal(large.message.attachments.length, 4);
   assert.deepEqual(large.message.attachments.map((item) => item.mimeType), ["text/csv", "text/html", "text/csv", "text/html"]);
 });
+
+function getCommandHandler(bot, name) {
+  for (const symbol of Object.getOwnPropertySymbols(bot)) {
+    const definition = bot[symbol];
+    if (definition?.commands instanceof Map) {
+      const handler = definition.commands.get(name);
+      if (handler) return handler;
+    }
+  }
+  throw new Error(`Command not found: ${name}`);
+}

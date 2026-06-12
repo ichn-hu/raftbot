@@ -129,7 +129,7 @@ The current daemon delivery payload already carries the needed surface fields:
 - `channel_type="thread"` maps to `surface.kind="thread"`.
 - `parent_channel_type` and `parent_channel_name` identify the thread parent.
 - `channel_name="thread-<shortId>"` gives the thread short id used in Slock targets.
-- `channel_type="dm"` maps to `surface.kind="dm"`.
+- `channel_type="dm"` maps to `surface.kind="dm"`. The runtime also treats `direct` / `direct_message` channel types, or a normalized target beginning with `dm:`, as DM surfaces so `/help`-style commands work without an explicit bot mention.
 - `mention` / `mentioned` flags map to `event.mentioned`.
 
 Slock thread reply targets must use the parent surface plus the parent message short id, for example `#all:8470fd4e`, not `#thread-8470fd4e:<replyMsgShortId>`.
