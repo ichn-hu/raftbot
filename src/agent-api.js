@@ -81,6 +81,27 @@ export class AgentApiClient {
     log("agent_api.credential.mint.ok", { agentId, credentialId: credential.credentialId });
     return credential;
   }
+
+  async getAgentProfile(agentId) {
+    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/profile`, this.serverUrl), {
+      headers: {
+        Authorization: `Bearer ${this.machineApiKey}`,
+        "X-Agent-Id": agentId,
+        "X-Slock-Client": "raftbot"
+      }
+    });
+    if (!res.ok) {
+      const detail = await safeErrorDetail(res);
+      log("agent_api.profile.failed", { agentId, status: res.status, detail });
+      throw new Error(`agent_profile_failed: HTTP ${res.status} ${detail}`);
+    }
+    const body = await res.json();
+    log("agent_api.profile.ok", { agentId, name: body.name, displayName: body.displayName });
+    return {
+      name: typeof body.name === "string" ? body.name : "",
+      displayName: typeof body.displayName === "string" ? body.displayName : ""
+    };
+  }
 }
 
 async function safeErrorDetail(res) {

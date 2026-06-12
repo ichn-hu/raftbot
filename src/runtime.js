@@ -55,21 +55,30 @@ export function createBot() {
         connection.send({ type: "pong" });
         break;
       case "agent:start":
-        log("agent.start", {
-          agentId: msg.agentId,
-          launchId: msg.launchId,
-          runtime: msg.config?.runtime,
-          model: msg.config?.model
-        });
-        agents.set(msg.agentId, {
-          launchId: msg.launchId,
-          activity: "online",
-          detail: "RaftBot ready",
-          clientSeq: 1
-        });
-        connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
-        sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
-        break;
+        {
+          const profile = await loadAgentProfile(msg.agentId);
+          const mentionNames = buildMentionNames(profile, botOptions);
+          log("agent.start", {
+            agentId: msg.agentId,
+            launchId: msg.launchId,
+            runtime: msg.config?.runtime,
+            model: msg.config?.model,
+            profileName: profile?.name,
+            displayName: profile?.displayName,
+            mentionNames
+          });
+          agents.set(msg.agentId, {
+            launchId: msg.launchId,
+            activity: "online",
+            detail: "RaftBot ready",
+            clientSeq: 1,
+            profile,
+            mentionNames
+          });
+          connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
+          sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
+          break;
+        }
       case "agent:stop":
         log("agent.stop", { agentId: msg.agentId, launchId: msg.launchId });
         agents.delete(msg.agentId);
@@ -85,7 +94,9 @@ export function createBot() {
           channelType: msg.message?.channel_type,
           channelName: msg.message?.channel_name,
           parentChannelType: msg.message?.parent_channel_type,
-          parentChannelName: msg.message?.parent_channel_name
+          parentChannelName: msg.message?.parent_channel_name,
+          serverMention: msg.message?.mention ?? msg.message?.mentioned ?? msg.message?.is_mention,
+          textPrefix: String(msg.message?.content ?? "").slice(0, 80)
         });
         await handleDelivery(msg);
         break;
@@ -137,7 +148,7 @@ export function createBot() {
 
   async function handleDelivery(msg) {
     sendActivity(msg.agentId, "working", "Message received", msg.launchId);
-    const event = normalizeMessageEvent(msg, botOptions);
+    const event = normalizeMessageEvent(msg, botOptions, agents.get(msg.agentId));
     const parsed = parseSlashCommand(event.commandText);
     event.command = parsed;
     const ctx = createContext(msg, event, parsed);
@@ -262,6 +273,16 @@ export function createBot() {
     });
   }
 
+  async function loadAgentProfile(agentId) {
+    try {
+      return await agentApi.getAgentProfile(agentId);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log("agent.profile.unavailable", { agentId, detail });
+      return null;
+    }
+  }
+
   return bot;
 }
 
@@ -277,21 +298,22 @@ function parseRuntimeIds(options) {
   return [options.runtimeId ?? "raftbot"];
 }
 
-function normalizeMessageEvent(msg, options = {}) {
+function normalizeMessageEvent(msg, options = {}, agentState = null) {
   const message = msg.message ?? {};
   const target = formatTarget(message);
   const surface = formatSurface(message, target);
-  const mentioned = detectMention(message);
+  const addressing = detectAddressing(message, agentState, options);
   return {
     id: message.message_id ?? "",
     target,
     replyTarget: formatReplyTarget(message),
     surface,
-    mentioned,
-    addressed: isAddressed(surface, mentioned, options),
+    mentioned: addressing.mentioned,
+    mentionedName: addressing.mentionedName,
+    addressed: isAddressed(surface, addressing.mentioned, options),
     sender: message.sender_name ? `@${message.sender_name}` : "",
     text: message.content ?? "",
-    commandText: stripAddressingPrefix(message.content ?? "", mentioned)
+    commandText: stripAddressingPrefix(message.content ?? "", addressing.stripLeadingMention)
   };
 }
 
@@ -345,8 +367,16 @@ function formatSurface(message, target) {
   return { kind: "channel", target, name: message.channel_name ?? "" };
 }
 
-function detectMention(message) {
-  return message.mention === true || message.mentioned === true || message.is_mention === true;
+function detectAddressing(message, agentState, options = {}) {
+  const serverMention = message.mention === true || message.mentioned === true || message.is_mention === true;
+  const leadingMention = parseLeadingMention(message.content);
+  const mentionNames = agentState?.mentionNames?.length ? agentState.mentionNames : buildMentionNames(null, options);
+  const leadingMatches = leadingMention ? mentionNames.includes(normalizeMentionName(leadingMention.name)) : false;
+  return {
+    mentioned: serverMention || leadingMatches,
+    mentionedName: leadingMention?.name ?? null,
+    stripLeadingMention: serverMention || leadingMatches
+  };
 }
 
 function isAddressed(surface, mentioned, options = {}) {
@@ -355,10 +385,41 @@ function isAddressed(surface, mentioned, options = {}) {
   return options.ambientChannelCommands === true;
 }
 
-function stripAddressingPrefix(text, mentioned) {
+function stripAddressingPrefix(text, stripLeadingMention) {
   const trimmed = String(text ?? "").trim();
-  if (!mentioned) return trimmed;
+  if (!stripLeadingMention) return trimmed;
   return trimmed.replace(/^@\S+\s+/, "").trim();
+}
+
+function parseLeadingMention(text) {
+  const match = String(text ?? "").trim().match(/^@(\S+)\s+([\s\S]*)$/);
+  if (!match) return null;
+  return { name: match[1], rest: match[2] };
+}
+
+function buildMentionNames(profile, options = {}) {
+  const names = new Set();
+  addMentionName(names, profile?.name);
+  addMentionName(names, profile?.displayName);
+  for (const name of parseListOption(options.botHandles ?? options.botHandle)) {
+    addMentionName(names, name);
+  }
+  return [...names];
+}
+
+function addMentionName(names, value) {
+  const normalized = normalizeMentionName(value);
+  if (normalized) names.add(normalized);
+}
+
+function normalizeMentionName(value) {
+  return String(value ?? "").trim().replace(/^@/, "").toLowerCase();
+}
+
+function parseListOption(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
 }
 
 export function parseSlashCommand(text) {

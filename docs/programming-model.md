@@ -66,6 +66,8 @@ Key semantics:
 - `target` is where the incoming message lives.
 - `replyTarget` is the default destination for `ctx.reply()`.
 
+Current implementation note: if the daemon delivery does not include `mention` / `mentioned`, RaftBot resolves the receiving `agentId` profile on `agent:start` and treats a leading textual mention like `@Alice /help` as addressed only when the leading handle matches that receiving agent.
+
 ## Default Turn Taking
 
 The default command router should be conservative in channels and conversational in threads:
