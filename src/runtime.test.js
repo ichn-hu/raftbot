@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeMessageEvent, parseSlashCommand } from "./runtime.js";
+import {
+  formatUnrecognizedDmFallback,
+  normalizeMessageEvent,
+  parseSlashCommand,
+  shouldSendDmUnrecognizedFallback
+} from "./runtime.js";
 
 test("DM messages are addressed slash commands without a bot mention", () => {
   const event = normalizeMessageEvent({
@@ -36,4 +41,45 @@ test("DM surface can be inferred from target or direct-message channel type", ()
     assert.equal(event.addressed, true);
     assert.deepEqual(parseSlashCommand(event.commandText), { name: "sql", args: ["select", "1"] });
   }
+});
+
+test("DM unrecognized messages fall back to help", () => {
+  const dmEvent = normalizeMessageEvent({
+    message: {
+      message_id: "msg-1",
+      channel_type: "dm",
+      channel_name: "ichnhu",
+      sender_name: "ichnhu",
+      content: "hello"
+    }
+  });
+
+  assert.equal(shouldSendDmUnrecognizedFallback(dmEvent, null, null), true);
+  assert.equal(
+    shouldSendDmUnrecognizedFallback(dmEvent, { name: "wat", args: [] }, null),
+    true
+  );
+  assert.equal(
+    shouldSendDmUnrecognizedFallback(dmEvent, { name: "help", args: [] }, () => {}),
+    false
+  );
+  assert.equal(shouldSendDmUnrecognizedFallback(dmEvent, null, null, true), false);
+  assert.match(formatUnrecognizedDmFallback({ hasHelp: true }), /Showing \/help/);
+});
+
+test("channel messages do not get DM unrecognized fallback", () => {
+  const channelEvent = normalizeMessageEvent({
+    message: {
+      message_id: "msg-1",
+      channel_type: "channel",
+      channel_name: "raftbot-devs",
+      sender_name: "ichnhu",
+      content: "/wat"
+    }
+  });
+
+  assert.equal(
+    shouldSendDmUnrecognizedFallback(channelEvent, { name: "wat", args: [] }, null),
+    false
+  );
 });
