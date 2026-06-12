@@ -4,7 +4,13 @@ RaftBot apps should be written against Slock-native framework primitives, not da
 
 ## Lifecycle
 
-Lifecycle handlers run per Slock Agent identity. If one daemon advertises one bot model and the server starts three Agents using that model, each Agent receives an independent context and scheduler scope.
+RaftBot separates bot code from bot instances:
+
+- Bot code is the local package/model implementation, for example `Clock Bot`.
+- A bot instance is a Slock Agent created on the server and delivered to the daemon as an `agentId`.
+- One bot code package can have many running instances.
+
+Lifecycle handlers run per Slock Agent identity. If one daemon advertises one bot model and the server starts three Agents using that model, each Agent receives an independent context, workspace, state file, and scheduler scope.
 
 ```js
 const bot = createBot();
@@ -34,6 +40,7 @@ Semantics:
 
 - A job is started for each running Agent after `agent:start`.
 - Jobs are stopped automatically on `agent:stop`.
+- Stopping a job does not delete that Agent's workspace or state.
 - A job does not run concurrently with itself for the same Agent; if a tick is still active, the next tick is skipped.
 - Supported interval strings are `ms`, `s`, `m`, and `h`, for example `500ms`, `30s`, `1m`, `2h`.
 - A job runs once immediately by default and then on the interval. Use `{ immediate: false }` to wait for the first interval.
@@ -97,6 +104,8 @@ RaftBot mirrors Slock daemon's per-Agent workspace model. Each running Agent get
 ```
 
 By default `workspaceRoot` is the same path Slock daemon uses: `$SLOCK_HOME/agents`, or `~/.slock/agents` when `SLOCK_HOME` is unset. Override it with `workspaceRoot` or `RAFTBOT_WORKSPACE_ROOT` only for tests or custom deployments.
+
+The workspace is keyed by bot instance (`agentId`), not by bot code. Two Clock Bot Agents share the same Clock Bot code but have separate workspaces and state files.
 
 Bot writers should use `ctx.state` for small durable JSON state instead of directly reading and writing files:
 
