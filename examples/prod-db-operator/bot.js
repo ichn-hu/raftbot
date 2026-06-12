@@ -44,8 +44,9 @@ export function createProdDbOperatorBot(options = {}) {
       "/config manager remove @manager [@manager...]",
       "",
       `Target: ${describeDatabaseTarget(config)}`,
-      `Managers: ${config.managers.length > 0 ? config.managers.join(", ") : "not configured; write SQL cannot be approved"}`
-    ].join("\n"));
+      `Managers: ${config.managers.length > 0 ? config.managers.join(", ") : "not configured; write SQL cannot be approved"}`,
+      config.seedDefaultData ? "Default SQLite demo tables: raftbot_demo_customers, raftbot_demo_orders, raftbot_demo_events" : null
+    ].filter(Boolean).join("\n"));
   });
 
   bot.command("config", async (ctx) => {
@@ -424,16 +425,18 @@ function normalizeDefaults(options) {
   };
 }
 
-function resolveTargetConfig(ctx, config) {
+export function resolveTargetConfig(ctx, config) {
+  const usesDefaultSqlitePath = config.driver === "sqlite" && (config.seedDefaultData === true || !config.sqlitePath);
   const sqlitePath = config.driver === "sqlite" ? config.sqlitePath || path.join(ctx.workspace.path, "prod-db-operator.sqlite") : "";
-  return { ...config, sqlitePath };
+  return { ...config, sqlitePath, seedDefaultData: usesDefaultSqlitePath };
 }
 
 export function snapshotExecutionTarget(config) {
   return {
     driver: config.driver,
     databaseUrl: config.databaseUrl || "",
-    sqlitePath: config.sqlitePath || ""
+    sqlitePath: config.sqlitePath || "",
+    seedDefaultData: config.seedDefaultData === true
   };
 }
 
@@ -505,6 +508,7 @@ function formatConfig(config) {
     `Database URL: ${redacted.databaseUrl || "(none)"}`,
     `SQLite path: ${redacted.sqlitePath || "(workspace default)"}`,
     `Managers: ${redacted.managers.length > 0 ? redacted.managers.join(", ") : "none"}`,
+    `Default SQLite demo data: ${config.seedDefaultData ? "enabled" : "disabled"}`,
     `Inline rows: ${redacted.inlineRows}`,
     `Page rows: ${redacted.pageRows}`,
     `Max rows: ${redacted.maxRows}`
