@@ -343,7 +343,7 @@ export async function startBotDaemon(bots, options) {
       attachments: {
         upload: (target, input) => agentApi.uploadAttachment(agentId, target, input)
       },
-      send: (target, message) => sendContextMessage(agentId, target, message)
+      send: (target, message, options) => sendContextMessage(agentId, target, message, options)
     };
   }
 

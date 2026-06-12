@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { snapshotExecutionTarget } from "./bot.js";
 import { createDatabaseAdapter } from "./db-adapters.js";
 import { createResultResponse } from "./result-renderer.js";
 import { classifySql } from "./sql-utils.js";
@@ -40,6 +41,45 @@ test("sqlite adapter commits successful transaction and rolls back failed one", 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("sqlite adapter enforces read row cap and reports truncation", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
+  try {
+    const adapter = await createDatabaseAdapter({ driver: "sqlite", sqlitePath: path.join(dir, "test.sqlite") });
+    await adapter.executeTransaction([
+      "create table users (id integer primary key, name text)",
+      "insert into users (name) values ('Ada'), ('Grace'), ('Linus'), ('Margaret')"
+    ]);
+    const result = await adapter.query(["select id, name from users order by id"], { maxRows: 2 });
+    assert.equal(result.results[0].rows.length, 2);
+    assert.deepEqual(result.results[0].rows.map((row) => row.name), ["Ada", "Grace"]);
+    assert.equal(result.results[0].totalRows, 3);
+    assert.equal(result.results[0].truncated, true);
+    await adapter.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("approval requests snapshot immutable execution target fields", () => {
+  const config = {
+    driver: "pg",
+    databaseUrl: "postgres://app:secret@old.example/db",
+    sqlitePath: "/tmp/old.sqlite",
+    managers: ["@manager"],
+    maxRows: 100
+  };
+  const snapshot = snapshotExecutionTarget(config);
+  config.driver = "mysql";
+  config.databaseUrl = "mysql://app:secret@new.example/db";
+  config.sqlitePath = "/tmp/new.sqlite";
+
+  assert.deepEqual(snapshot, {
+    driver: "pg",
+    databaseUrl: "postgres://app:secret@old.example/db",
+    sqlitePath: "/tmp/old.sqlite"
+  });
 });
 
 test("result renderer uses inline markdown for small results and attachments for larger results", () => {

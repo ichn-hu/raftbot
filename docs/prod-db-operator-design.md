@@ -15,6 +15,8 @@ The bot is deterministic. It classifies SQL, presents approval summaries, record
 - Transaction failure semantics are all-or-nothing: `BEGIN`, run all statements, `ROLLBACK` on the first error, `COMMIT` only if all statements succeed.
 - Managers are configured at daemon startup. All managers are mentioned in the request thread. Any manager can approve or reject. The requester cannot self-approve. If no manager is configured, write SQL cannot be approved.
 - Default approval surface is the original request thread. `/dm <requestId>` can force DM reminders to all managers.
+- Pending write requests snapshot the execution target at request creation. Later `/config db ...` changes do not retarget already-pending SQL.
+- Read-only queries are hard-capped at the adapter layer by fetching at most `maxRows + 1` rows and returning at most `maxRows` rows.
 - High-risk SQL is allowed after manager approval. The bot marks risk categories in the approval summary and audit log, but does not hard-block them.
 - Driver dependencies are included directly in the repo for the MVP.
 
@@ -122,7 +124,7 @@ A human or Agent sends:
 @ProdDb /sql update users set plan = 'pro' where id = 123;
 ```
 
-The bot classifies it as write SQL, creates a pending request, and posts an approval summary in the thread. The summary includes:
+The bot classifies it as write SQL, snapshots the current execution target into the pending request, and posts an approval summary in the thread. The summary includes:
 
 - request ID
 - requester
@@ -147,7 +149,7 @@ or:
 /reject sql_abc123
 ```
 
-On approval, the bot executes all statements in one transaction. If any statement fails, it rolls the transaction back and reports the error. If all statements succeed, it commits and reports affected row count.
+On approval, the bot executes all statements against the target snapshot captured when the request was created, not whatever target is currently configured. It executes in one transaction. If any statement fails, it rolls the transaction back and reports the error. If all statements succeed, it commits and reports affected row count.
 
 ### 8. Someone Forces A Manager DM
 
@@ -177,7 +179,7 @@ Read-only result sets are returned in three tiers:
 - Large results: HTML and CSV attachments.
 - Very large results: paginated HTML/CSV attachments with a configured page size and max-row cap.
 
-If a result exceeds the configured cap, the bot marks it as truncated in the message and attachments.
+If a result exceeds the configured cap, the bot marks it as truncated in the message and attachments. Adapters enforce the cap while reading by requesting at most one sentinel row beyond the configured max; the renderer never receives more than `maxRows` rows per result set.
 
 ## SQL Classification
 
@@ -212,8 +214,7 @@ The Slock attachment flow is:
 Framework API:
 
 ```js
-await ctx.reply({
-  text: "Query result attached.",
+await ctx.reply("Query result attached.", {
   attachments: [
     { filename: "result.csv", mimeType: "text/csv", bytes: csvBuffer }
   ]

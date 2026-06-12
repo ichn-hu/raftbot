@@ -29,7 +29,7 @@ class PgAdapter {
     try {
       const results = [];
       for (const statement of statements) {
-        const result = await client.query(statement);
+        const result = await client.query(cappedReadStatement(statement, options.maxRows));
         results.push(normalizeRows(statement, result.rows ?? [], options.maxRows));
       }
       return { results };
@@ -73,7 +73,7 @@ class MySqlAdapter {
     try {
       const results = [];
       for (const statement of statements) {
-        const [rows] = await connection.query(statement);
+        const [rows] = await connection.query(cappedReadStatement(statement, options.maxRows));
         results.push(normalizeRows(statement, Array.isArray(rows) ? rows : [], options.maxRows));
       }
       return { results };
@@ -121,7 +121,11 @@ class SqliteAdapter {
 
   async query(statements, options = {}) {
     const db = await this.open();
-    const results = statements.map((statement) => normalizeRows(statement, db.prepare(statement).all(), options.maxRows));
+    const results = statements.map((statement) => normalizeRows(
+      statement,
+      db.prepare(cappedReadStatement(statement, options.maxRows)).all(),
+      options.maxRows
+    ));
     return { results };
   }
 
@@ -145,12 +149,28 @@ class SqliteAdapter {
 }
 
 function normalizeRows(statement, rows, maxRows = 2_000) {
+  const cap = normalizedMaxRows(maxRows);
   const safeRows = rows.map((row) => row && typeof row === "object" ? { ...row } : { value: row });
-  const truncated = safeRows.length > maxRows;
+  const truncated = safeRows.length > cap;
   return {
     statement,
-    rows: truncated ? safeRows.slice(0, maxRows) : safeRows,
+    rows: truncated ? safeRows.slice(0, cap) : safeRows,
     totalRows: safeRows.length,
     truncated
   };
+}
+
+function cappedReadStatement(statement, maxRows = 2_000) {
+  const cap = normalizedMaxRows(maxRows);
+  const fetchRows = cap + 1;
+  const sql = stripTrailingSemicolons(statement);
+  return `SELECT * FROM (${sql}) AS raftbot_read_cap LIMIT ${fetchRows}`;
+}
+
+function stripTrailingSemicolons(statement) {
+  return String(statement ?? "").trim().replace(/;+$/, "").trim();
+}
+
+function normalizedMaxRows(maxRows) {
+  return Number.isInteger(maxRows) && maxRows > 0 ? maxRows : 2_000;
 }

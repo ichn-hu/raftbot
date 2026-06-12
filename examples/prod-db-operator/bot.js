@@ -188,7 +188,7 @@ export function createProdDbOperatorBot(options = {}) {
     const startedAt = new Date().toISOString();
     try {
       const adapter = await getAdapter(ctx, config);
-      const result = await adapter.query(classification.statements, { maxRows: config.maxRows + 1 });
+      const result = await adapter.query(classification.statements, { maxRows: config.maxRows });
       const response = createResultResponse(result.results, {
         baseName: `query-${Date.now().toString(36)}`,
         inlineRows: config.inlineRows,
@@ -245,6 +245,7 @@ export function createProdDbOperatorBot(options = {}) {
       risks: classification.risks,
       parseError: classification.parseError,
       target: ctx.event.replyTarget,
+      executionTarget: snapshotExecutionTarget(config),
       db: redactConfig(config),
       createdAt: new Date().toISOString()
     };
@@ -284,6 +285,7 @@ export function createProdDbOperatorBot(options = {}) {
   }
 
   async function executeApprovedWrite(ctx, request, config) {
+    const executionConfig = requestExecutionConfig(request, config);
     request.status = "executing";
     request.decidedBy = ctx.event.sender;
     request.decidedAt = new Date().toISOString();
@@ -291,7 +293,7 @@ export function createProdDbOperatorBot(options = {}) {
     await writeAudit(ctx, { type: "approval_approved", request });
 
     try {
-      const adapter = await getAdapter(ctx, config);
+      const adapter = await getAdapter(ctx, executionConfig);
       const execution = await adapter.executeTransaction(request.statements);
       request.status = "executed";
       request.executedAt = new Date().toISOString();
@@ -312,7 +314,7 @@ export function createProdDbOperatorBot(options = {}) {
       await ctx.reply([
         `SQL request ${request.id} failed and was rolled back.`,
         "",
-        formatSqlError("Write transaction failed", err, config, { transactionRolledBack: true })
+        formatSqlError("Write transaction failed", err, executionConfig, { transactionRolledBack: true })
       ].join("\n"));
     }
   }
@@ -425,6 +427,24 @@ function normalizeDefaults(options) {
 function resolveTargetConfig(ctx, config) {
   const sqlitePath = config.driver === "sqlite" ? config.sqlitePath || path.join(ctx.workspace.path, "prod-db-operator.sqlite") : "";
   return { ...config, sqlitePath };
+}
+
+export function snapshotExecutionTarget(config) {
+  return {
+    driver: config.driver,
+    databaseUrl: config.databaseUrl || "",
+    sqlitePath: config.sqlitePath || ""
+  };
+}
+
+function requestExecutionConfig(request, fallbackConfig) {
+  if (request.executionTarget) {
+    return {
+      ...fallbackConfig,
+      ...snapshotExecutionTarget(request.executionTarget)
+    };
+  }
+  return fallbackConfig;
 }
 
 function normalizeDriver(value) {
