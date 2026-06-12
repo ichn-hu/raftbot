@@ -34,6 +34,7 @@ export class DaemonConnection {
         activity: message.activity,
         status: message.status,
         runtimeCount: Array.isArray(message.runtimes) ? message.runtimes.length : undefined,
+        runningAgentCount: Array.isArray(message.runningAgents) ? message.runningAgents.length : undefined,
         modelCount: Array.isArray(message.models) ? message.models.length : undefined
       });
       this.ws.send(payload);
@@ -82,11 +83,12 @@ export class DaemonConnection {
 
 export function readyMessage(options = {}) {
   const runtimes = options.runtimes ?? [options.runtimeId ?? "raftbot"];
+  const runningAgents = Array.isArray(options.runningAgents) ? options.runningAgents : [];
   return {
     type: "ready",
     capabilities: ["agent:start", "agent:stop", "agent:deliver"],
     runtimes,
-    runningAgents: [],
+    runningAgents,
     hostname: options.hostname ?? os.hostname(),
     os: options.os ?? `${os.platform()} ${os.arch()}`,
     daemonVersion: options.daemonVersion ?? "raftbot/0.0.0"

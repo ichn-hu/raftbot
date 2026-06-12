@@ -6,6 +6,7 @@ import {
   parseSlashCommand,
   shouldSendDmUnrecognizedFallback
 } from "./runtime.js";
+import { readyMessage } from "./daemon-connection.js";
 
 test("DM messages are addressed slash commands without a bot mention", () => {
   const event = normalizeMessageEvent({
@@ -82,4 +83,14 @@ test("channel messages do not get DM unrecognized fallback", () => {
     shouldSendDmUnrecognizedFallback(channelEvent, { name: "wat", args: [] }, null),
     false
   );
+});
+
+test("ready message reports currently running agents", () => {
+  const ready = readyMessage({
+    runtimes: ["claude", "codex"],
+    runningAgents: ["agent-a", "agent-b"]
+  });
+
+  assert.deepEqual(ready.runtimes, ["claude", "codex"]);
+  assert.deepEqual(ready.runningAgents, ["agent-a", "agent-b"]);
 });
