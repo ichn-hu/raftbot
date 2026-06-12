@@ -87,3 +87,20 @@ test("serialized game state resumes and renders legal commands", async () => {
   assert.match(html, /\/place d3/);
   assert.match(html, /Press Ctrl\+C \/ Cmd\+C/);
 });
+
+test("rendered board locks mobile viewport and highlights selected moves", async () => {
+  const game = await createGame({
+    threadTarget: "#raftbot-devs:abc12345",
+    startMessageId: "abc12345",
+    black: "@alice",
+    white: "@bob"
+  });
+
+  const html = renderBoardHtml(game);
+  assert.match(html, /maximum-scale=1, user-scalable=no/);
+  assert.match(html, /\.legal\.selected::before/);
+  assert.match(html, /selectedPulse/);
+  assert.match(html, /focus\(\{ preventScroll: true \}\)/);
+  assert.doesNotMatch(html, /left: -9999px/);
+  assert.match(html, /box\.select\(\);[\s\S]*navigator\.clipboard\.writeText\(command\)/);
+});
