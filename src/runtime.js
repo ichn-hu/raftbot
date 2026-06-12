@@ -91,7 +91,8 @@ export async function startBotDaemon(bots, options) {
       connection.send(readyMessage({
         daemonVersion: options.daemonVersion,
         runtimeId: options.runtimeId,
-        runtimes: parseRuntimeIds(options)
+        runtimes: parseRuntimeIds(options),
+        runningAgents: Array.from(agents.keys())
       }));
     },
     onMessage: (msg) => {
