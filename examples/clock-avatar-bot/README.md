@@ -26,6 +26,16 @@ node examples/clock-avatar-bot/index.js \
   --time-zone UTC
 ```
 
-The visible model name in Slock is `Clock Bot`.
+The visible model name in Slock is `Clock Bot`. The model id is `clock-bot`.
 
 The process is a Clock Bot daemon. It connects to Slock and exposes model metadata immediately, but the clock sync loop starts only after the user adds/starts a Clock Bot Agent and the server sends `agent:start`.
+
+The combined demo daemon also exposes this model alongside `prod-db-operator`:
+
+```bash
+node examples/all-bots/index.js \
+  --server-url https://api.slock.ai \
+  --api-key sk_machine_xxx \
+  --runtime-ids "claude,codex,antigravity,kimi,copilot,cursor,gemini,opencode,pi" \
+  --time-zone UTC
+```

@@ -1,4 +1,4 @@
-const RUNNER_SCOPES = ["send", "read", "mentions", "tasks", "reactions", "server", "channels", "knowledge", "profile"];
+const RUNNER_SCOPES = ["send", "read", "mentions", "tasks", "reactions", "server", "channels", "knowledge"];
 import { log } from "./logger.js";
 
 export class AgentApiClient {
@@ -55,7 +55,7 @@ export class AgentApiClient {
     }
     const credential = await this.getAgentCredential(agentId);
     log("agent_api.profile.update.start", { agentId, fields: Object.keys(body) });
-    const res = await fetch(new URL("/internal/agent-api/profile", this.serverUrl), {
+    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/profile`, this.serverUrl), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${credential.apiKey}`,
@@ -86,7 +86,7 @@ export class AgentApiClient {
     const form = new FormData();
     form.append("avatar", new Blob([bytes], { type: mimeType }), filename);
     log("agent_api.avatar.update.start", { agentId, filename, mimeType, size: bytes.byteLength });
-    const res = await fetch(new URL("/internal/agent-api/profile/avatar", this.serverUrl), {
+    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/profile/avatar`, this.serverUrl), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${credential.apiKey}`,

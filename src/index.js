@@ -1,2 +1,2 @@
-export { createBot } from "./runtime.js";
+export { createBot, startBotDaemon } from "./runtime.js";
 export { parseArgs } from "./cli-options.js";

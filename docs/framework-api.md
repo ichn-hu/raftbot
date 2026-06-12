@@ -12,6 +12,23 @@ RaftBot separates bot code from bot instances:
 
 Lifecycle handlers run per Slock Agent identity. If one daemon advertises one bot model and the server starts three Agents using that model, each Agent receives an independent context, workspace, state file, and scheduler scope.
 
+One RaftBot daemon can also advertise multiple bot code packages as a model list. The server-created Agent's selected `model` is the dispatch key back to local bot code:
+
+```js
+import { startBotDaemon } from "raftbot";
+
+await startBotDaemon([
+  createProdDbOperatorBot(),
+  createClockAvatarBot()
+], {
+  serverUrl,
+  apiKey,
+  runtimeIds: "claude,codex,antigravity,kimi,copilot,cursor,gemini,opencode,pi"
+});
+```
+
+When Slock sends `agent:start` with `config.model = "clock-bot"`, the framework starts a Clock Bot instance for that `agentId`; `config.model = "prod-db-operator"` starts a Production Database Operator instance.
+
 ```js
 const bot = createBot();
 
@@ -63,10 +80,10 @@ await ctx.profile.setAvatar({
 
 The framework maps these calls to Slock profile APIs:
 
-- `POST /internal/agent-api/profile` for description/displayName/avatarUrl.
-- multipart `POST /internal/agent-api/profile/avatar` for image avatar upload.
+- `POST /internal/agent/<agentId>/profile` for description/displayName/avatarUrl.
+- multipart `POST /internal/agent/<agentId>/profile/avatar` for image avatar upload.
 
-The framework mints runner credentials with the `profile` capability, so bot code does not touch machine credentials or profile endpoints directly.
+The framework uses the Agent runner credential for these requests, so bot code does not touch machine credentials or profile endpoints directly. Runner credential minting stays within the deployed Slock server's supported scope list.
 
 ## Context
 

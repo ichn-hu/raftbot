@@ -5,43 +5,49 @@ import { JsonStateStore } from "./state-store.js";
 import os from "node:os";
 import path from "node:path";
 
-export function createBot() {
-  const commands = new Map();
-  const messageHandlers = new Set();
-  const startHandlers = new Set();
-  const stopHandlers = new Set();
-  const scheduledJobs = [];
-  const agents = new Map();
-  let connection = null;
-  let agentApi = null;
-  let runtimeLabel = "RaftBot";
-  let modelId = "default";
-  let botOptions = {};
-  let stateStore = null;
+const BOT_DEFINITION = Symbol("raftbot.definition");
+
+export function createBot(options = {}) {
+  const definition = {
+    commands: new Map(),
+    messageHandlers: new Set(),
+    startHandlers: new Set(),
+    stopHandlers: new Set(),
+    scheduledJobs: [],
+    modelId: null,
+    runtimeLabel: null,
+    options: {}
+  };
+  applyBotMetadata(definition, options);
 
   const bot = {
+    model(metadata) {
+      applyBotMetadata(definition, metadata);
+      return bot;
+    },
+
     command(name, handler) {
-      commands.set(normalizeCommand(name), handler);
+      definition.commands.set(normalizeCommand(name), handler);
       return bot;
     },
 
     onMessage(handler) {
-      messageHandlers.add(handler);
+      definition.messageHandlers.add(handler);
       return bot;
     },
 
     onStart(handler) {
-      startHandlers.add(handler);
+      definition.startHandlers.add(handler);
       return bot;
     },
 
     onStop(handler) {
-      stopHandlers.add(handler);
+      definition.stopHandlers.add(handler);
       return bot;
     },
 
     every(interval, handler, options = {}) {
-      scheduledJobs.push({
+      definition.scheduledJobs.push({
         intervalMs: parseIntervalMs(interval),
         handler,
         immediate: options.immediate !== false
@@ -50,31 +56,48 @@ export function createBot() {
     },
 
     async start(options) {
-      botOptions = options;
-      runtimeLabel = options.runtimeLabel ?? options.runtimeId ?? "RaftBot";
-      modelId = options.modelId ?? "default";
-      stateStore = new JsonStateStore(resolveWorkspaceRoot(options));
-      agentApi = new AgentApiClient({
-        serverUrl: options.serverUrl,
-        apiKey: options.apiKey
-      });
-      connection = new DaemonConnection({
-        serverUrl: options.serverUrl,
-        apiKey: options.apiKey,
-        onOpen: () => {
-          connection.send(readyMessage({
-            daemonVersion: options.daemonVersion,
-            runtimeId: options.runtimeId,
-            runtimes: parseRuntimeIds(options)
-          }));
-        },
-        onMessage: (msg) => {
-          void handleDaemonMessage(msg);
-        }
-      });
-      connection.connect();
+      await startBotDaemon([bot], options);
     }
   };
+
+  Object.defineProperty(bot, BOT_DEFINITION, { value: definition });
+  return bot;
+}
+
+export async function startBotDaemon(bots, options) {
+  const definitions = prepareBotDefinitions(bots, options);
+  const botsByModel = new Map(definitions.map((definition) => [definition.modelId, definition]));
+  const models = definitions.map((definition) => ({
+    id: definition.modelId,
+    label: definition.runtimeLabel,
+    verified: true
+  }));
+  const defaultModelId = options.defaultModelId && botsByModel.has(options.defaultModelId)
+    ? options.defaultModelId
+    : definitions[0].modelId;
+  const agents = new Map();
+  const stateStore = new JsonStateStore(resolveWorkspaceRoot(options));
+  const agentApi = new AgentApiClient({
+    serverUrl: options.serverUrl,
+    apiKey: options.apiKey
+  });
+  let connection = null;
+
+  connection = new DaemonConnection({
+    serverUrl: options.serverUrl,
+    apiKey: options.apiKey,
+    onOpen: () => {
+      connection.send(readyMessage({
+        daemonVersion: options.daemonVersion,
+        runtimeId: options.runtimeId,
+        runtimes: parseRuntimeIds(options)
+      }));
+    },
+    onMessage: (msg) => {
+      void handleDaemonMessage(msg);
+    }
+  });
+  connection.connect();
 
   async function handleDaemonMessage(msg) {
     switch (msg.type) {
@@ -83,17 +106,19 @@ export function createBot() {
         break;
       case "agent:start":
         {
-          if (!acceptsAgentStart(msg.config)) {
+          const definition = selectBotForAgentStart(msg.config);
+          if (!definition) {
             log("agent.start.ignored", {
               agentId: msg.agentId,
               runtime: msg.config?.runtime,
               model: msg.config?.model,
-              expectedModel: modelId
+              availableModels: models.map((model) => model.id)
             });
             connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
             sendActivity(msg.agentId, "offline", "RaftBot model mismatch", msg.launchId);
             break;
           }
+          const botOptions = mergedBotOptions(definition, options);
           const profile = await loadAgentProfile(msg.agentId);
           const mentionNames = buildMentionNames(profile, botOptions);
           log("agent.start", {
@@ -101,11 +126,14 @@ export function createBot() {
             launchId: msg.launchId,
             runtime: msg.config?.runtime,
             model: msg.config?.model,
+            botModel: definition.modelId,
             profileName: profile?.name,
             displayName: profile?.displayName,
             mentionNames
           });
           agents.set(msg.agentId, {
+            bot: definition,
+            botOptions,
             launchId: msg.launchId,
             activity: "online",
             detail: "RaftBot ready",
@@ -177,12 +205,17 @@ export function createBot() {
         });
         break;
       case "machine:runtime_models:detect":
-        log("runtime.models.detect", { runtime: msg.runtime, requestId: msg.requestId, modelId, runtimeLabel });
+        log("runtime.models.detect", {
+          runtime: msg.runtime,
+          requestId: msg.requestId,
+          models: models.map((model) => model.id),
+          defaultModelId
+        });
         connection.send({
           type: "machine:runtime_models:result",
           requestId: msg.requestId,
-          models: [{ id: modelId, label: runtimeLabel, verified: true }],
-          default: modelId
+          models,
+          default: defaultModelId
         });
         break;
       default:
@@ -191,13 +224,19 @@ export function createBot() {
   }
 
   async function handleDelivery(msg) {
+    const agentState = agents.get(msg.agentId);
+    if (!agentState) {
+      log("agent.deliver.unknown_agent", { agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
+      ackDelivery(msg);
+      return;
+    }
     sendActivity(msg.agentId, "working", "Message received", msg.launchId);
-    const event = normalizeMessageEvent(msg, botOptions, agents.get(msg.agentId));
+    const event = normalizeMessageEvent(msg, agentState.botOptions, agentState);
     const parsed = parseSlashCommand(event.commandText);
     event.command = parsed;
     const ctx = createContext(msg, event, parsed);
     try {
-      for (const messageHandler of messageHandlers) {
+      for (const messageHandler of agentState.bot.messageHandlers) {
         await messageHandler(ctx);
       }
       if (!parsed) {
@@ -216,7 +255,7 @@ export function createBot() {
         sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
         return;
       }
-      const handler = commands.get(parsed.name);
+      const handler = agentState.bot.commands.get(parsed.name);
       if (!handler) {
         log("command.skip", { reason: "unknown_command", command: parsed.name, agentId: msg.agentId, messageId: event.id });
         sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
@@ -225,6 +264,7 @@ export function createBot() {
       log("command.start", {
         command: parsed.name,
         agentId: msg.agentId,
+        botModel: agentState.bot.modelId,
         messageId: event.id,
         replyTarget: event.replyTarget,
         seenUpToSeq: msg.seq
@@ -343,22 +383,27 @@ export function createBot() {
     }
   }
 
-  function acceptsAgentStart(config) {
-    if (botOptions.acceptAllModels === true) return true;
-    if (!modelId || modelId === "default") return true;
-    return config?.model === modelId;
+  function selectBotForAgentStart(config) {
+    if (options.acceptAllModels === true && definitions.length === 1) return definitions[0];
+    if (config?.model && botsByModel.has(config.model)) return botsByModel.get(config.model);
+    if (!config?.model && botsByModel.has(defaultModelId)) return botsByModel.get(defaultModelId);
+    return null;
   }
 
   async function runStartHandlers(agentId) {
+    const state = agents.get(agentId);
+    if (!state) return;
     const ctx = createAgentContext(agentId);
-    for (const handler of startHandlers) {
+    for (const handler of state.bot.startHandlers) {
       await runLifecycleHandler("start", agentId, handler, ctx);
     }
   }
 
   async function runStopHandlers(agentId) {
+    const state = agents.get(agentId);
+    if (!state) return;
     const ctx = createAgentContext(agentId);
-    for (const handler of stopHandlers) {
+    for (const handler of state.bot.stopHandlers) {
       await runLifecycleHandler("stop", agentId, handler, ctx);
     }
   }
@@ -377,8 +422,8 @@ export function createBot() {
 
   function startScheduledJobs(agentId) {
     const state = agents.get(agentId);
-    if (!state || scheduledJobs.length === 0) return;
-    for (const job of scheduledJobs) {
+    if (!state || state.bot.scheduledJobs.length === 0) return;
+    for (const job of state.bot.scheduledJobs) {
       const runner = createScheduledRunner(agentId, job);
       const timer = setInterval(runner, job.intervalMs);
       timer.unref?.();
@@ -412,8 +457,51 @@ export function createBot() {
       }
     };
   }
+}
 
-  return bot;
+function applyBotMetadata(definition, options = {}) {
+  if (typeof options.modelId === "string" && options.modelId.trim()) definition.modelId = options.modelId.trim();
+  if (typeof options.runtimeLabel === "string" && options.runtimeLabel.trim()) definition.runtimeLabel = options.runtimeLabel.trim();
+  if (typeof options.label === "string" && options.label.trim()) definition.runtimeLabel = options.label.trim();
+  definition.options = {
+    ...definition.options,
+    ...options
+  };
+}
+
+function prepareBotDefinitions(bots, options) {
+  if (!Array.isArray(bots) || bots.length === 0) {
+    throw new Error("startBotDaemon requires at least one bot");
+  }
+  const definitions = bots.map(getBotDefinition);
+  if (definitions.length === 1) {
+    applyBotMetadata(definitions[0], options);
+  }
+  const seen = new Set();
+  for (const definition of definitions) {
+    if (!definition.modelId) {
+      throw new Error("Each bot must define modelId before starting a multi-bot daemon");
+    }
+    if (seen.has(definition.modelId)) {
+      throw new Error(`Duplicate bot modelId: ${definition.modelId}`);
+    }
+    seen.add(definition.modelId);
+    if (!definition.runtimeLabel) definition.runtimeLabel = definition.modelId;
+  }
+  return definitions;
+}
+
+function getBotDefinition(bot) {
+  const definition = bot?.[BOT_DEFINITION];
+  if (!definition) throw new Error("Invalid bot passed to startBotDaemon");
+  return definition;
+}
+
+function mergedBotOptions(definition, daemonOptions) {
+  return {
+    ...daemonOptions,
+    ...definition.options
+  };
 }
 
 function normalizeCommand(name) {
