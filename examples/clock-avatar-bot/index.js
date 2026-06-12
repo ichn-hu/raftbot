@@ -8,7 +8,6 @@ const options = {
   ...parseArgs()
 };
 const defaultTimeZone = options.timeZone || "UTC";
-const timeZoneByAgent = new Map();
 const lastMinuteByAgent = new Map();
 
 const bot = createBot();
@@ -22,7 +21,6 @@ bot.every("1m", async (ctx) => {
 });
 
 bot.onStop(async (ctx) => {
-  timeZoneByAgent.delete(ctx.agentId);
   lastMinuteByAgent.delete(ctx.agentId);
 });
 
@@ -37,7 +35,7 @@ bot.command("help", async (ctx) => {
 });
 
 bot.command("tz", async (ctx) => {
-  const zone = getTimeZone(ctx.agentId);
+  const zone = await getTimeZone(ctx);
   await ctx.reply(`Timezone: ${zone}\nCurrent time: ${formatDescriptionTime(new Date(), zone)}`);
 });
 
@@ -51,7 +49,7 @@ bot.command("settz", async (ctx) => {
     await ctx.reply(`Invalid timezone: ${zone}\nUse an IANA timezone such as UTC, Asia/Shanghai, or America/Los_Angeles.`);
     return;
   }
-  timeZoneByAgent.set(ctx.agentId, zone);
+  await ctx.state.set("timezone", zone);
   lastMinuteByAgent.delete(ctx.agentId);
   await syncClock(ctx);
   await ctx.reply(`Timezone updated to ${zone}.\nCurrent time: ${formatDescriptionTime(new Date(), zone)}`);
@@ -61,7 +59,7 @@ await bot.start(options);
 
 async function syncClock(ctx) {
   const now = new Date();
-  const timeZone = getTimeZone(ctx.agentId);
+  const timeZone = await getTimeZone(ctx);
   const minuteKey = formatMinuteKey(now, timeZone);
   if (lastMinuteByAgent.get(ctx.agentId) === minuteKey) return;
   lastMinuteByAgent.set(ctx.agentId, minuteKey);
@@ -77,8 +75,8 @@ async function syncClock(ctx) {
   });
 }
 
-function getTimeZone(agentId) {
-  return timeZoneByAgent.get(agentId) || defaultTimeZone;
+async function getTimeZone(ctx) {
+  return ctx.state.get("timezone", defaultTimeZone);
 }
 
 function isValidTimeZone(zone) {

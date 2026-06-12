@@ -1,6 +1,7 @@
 import { DaemonConnection, readyMessage } from "./daemon-connection.js";
 import { AgentApiClient } from "./agent-api.js";
 import { log } from "./logger.js";
+import { JsonStateStore } from "./state-store.js";
 
 export function createBot() {
   const commands = new Map();
@@ -14,6 +15,7 @@ export function createBot() {
   let runtimeLabel = "RaftBot";
   let modelId = "default";
   let botOptions = {};
+  let stateStore = null;
 
   const bot = {
     command(name, handler) {
@@ -49,6 +51,7 @@ export function createBot() {
       botOptions = options;
       runtimeLabel = options.runtimeLabel ?? options.runtimeId ?? "RaftBot";
       modelId = options.modelId ?? "default";
+      stateStore = new JsonStateStore(resolveWorkspaceRoot(options));
       agentApi = new AgentApiClient({
         serverUrl: options.serverUrl,
         apiKey: options.apiKey
@@ -107,6 +110,7 @@ export function createBot() {
             clientSeq: 1,
             profile,
             mentionNames,
+            workspacePath: stateStore.forAgent(msg.agentId).workspacePath,
             jobs: []
           });
           connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
@@ -256,8 +260,13 @@ export function createBot() {
   }
 
   function createAgentContext(agentId) {
+    const state = stateStore.forAgent(agentId);
     return {
       agentId,
+      workspace: {
+        path: state.workspacePath
+      },
+      state,
       profile: {
         get: () => agentApi.getAgentProfile(agentId),
         update: (input) => agentApi.updateProfile(agentId, input),
@@ -415,6 +424,10 @@ function parseRuntimeIds(options) {
     return options.runtimeIds.split(",").map((item) => item.trim()).filter(Boolean);
   }
   return [options.runtimeId ?? "raftbot"];
+}
+
+function resolveWorkspaceRoot(options) {
+  return options.workspaceRoot || process.env.RAFTBOT_WORKSPACE_ROOT || ".raftbot/agents";
 }
 
 function parseIntervalMs(interval) {

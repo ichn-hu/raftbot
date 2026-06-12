@@ -87,3 +87,32 @@ interface BotContext {
 ```
 
 Message command contexts additionally include `event`, `command`, `args`, and `reply()`. Lifecycle and scheduled contexts omit message-specific fields.
+
+## Workspace And State
+
+RaftBot mirrors Slock daemon's per-Agent workspace model. Each running Agent gets a local workspace directory:
+
+```text
+<workspaceRoot>/<agentId>/
+```
+
+By default `workspaceRoot` is `.raftbot/agents` relative to the bot process working directory. Override it with `workspaceRoot` or `RAFTBOT_WORKSPACE_ROOT`.
+
+Bot writers should use `ctx.state` for small durable JSON state instead of directly reading and writing files:
+
+```js
+const zone = await ctx.state.get("timezone", "UTC");
+await ctx.state.set("timezone", "Asia/Shanghai");
+await ctx.state.delete("timezone");
+const snapshot = await ctx.state.all();
+```
+
+The default implementation stores state in:
+
+```text
+<workspaceRoot>/<agentId>/state.json
+```
+
+This is local process state. It survives daemon process restart on the same machine and workspace, but it is not a server-side replication mechanism.
+
+`ctx.workspace.path` exposes the workspace path for bot-specific artifacts that do not fit the key-value state API.
