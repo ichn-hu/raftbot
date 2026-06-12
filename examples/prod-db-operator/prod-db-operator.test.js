@@ -62,6 +62,45 @@ test("sqlite adapter enforces read row cap and reports truncation", async () => 
   }
 });
 
+test("default sqlite adapter seeds demo data once", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
+  try {
+    const sqlitePath = path.join(dir, "default.sqlite");
+    const adapter = await createDatabaseAdapter({ driver: "sqlite", sqlitePath, seedDefaultData: true });
+    const result = await adapter.query([
+      "select name, plan from raftbot_demo_customers order by id"
+    ], { maxRows: 10 });
+    assert.deepEqual(result.results[0].rows, [
+      { name: "Ada Lovelace", plan: "pro" },
+      { name: "Grace Hopper", plan: "enterprise" },
+      { name: "Katherine Johnson", plan: "starter" },
+      { name: "Margaret Hamilton", plan: "pro" }
+    ]);
+    await adapter.close();
+
+    const reopened = await createDatabaseAdapter({ driver: "sqlite", sqlitePath, seedDefaultData: true });
+    const count = await reopened.query(["select count(*) as count from raftbot_demo_customers"], { maxRows: 10 });
+    assert.deepEqual(count.results[0].rows, [{ count: 4 }]);
+    await reopened.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("explicit sqlite adapter does not seed demo data", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
+  try {
+    const adapter = await createDatabaseAdapter({ driver: "sqlite", sqlitePath: path.join(dir, "explicit.sqlite") });
+    await assert.rejects(
+      () => adapter.query(["select count(*) as count from raftbot_demo_customers"], { maxRows: 10 }),
+      /no such table/
+    );
+    await adapter.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("read cap only wraps subquery-safe select statements", () => {
   assert.equal(
     readStatementForExecution("select * from users;", 10),

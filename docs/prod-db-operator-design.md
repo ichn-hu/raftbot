@@ -80,6 +80,24 @@ or specify a machine-local path:
 /config db sqlite /var/lib/prod-db-operator/app.sqlite
 ```
 
+The workspace default SQLite database is initialized with small demo tables so a newly created bot can be tested immediately:
+
+- `raftbot_demo_customers`
+- `raftbot_demo_orders`
+- `raftbot_demo_events`
+
+Example query:
+
+```sql
+select c.name, c.plan, sum(o.amount_cents) as total_cents
+from raftbot_demo_customers c
+join raftbot_demo_orders o on o.customer_id = c.id
+group by c.id, c.name, c.plan
+order by total_cents desc;
+```
+
+Explicit SQLite paths are not seeded, so user-provided local databases are left untouched.
+
 For PostgreSQL or MySQL, the creator configures a DSN in DM:
 
 ```text

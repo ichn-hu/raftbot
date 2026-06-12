@@ -116,6 +116,7 @@ class SqliteAdapter {
     if (this.db) return this.db;
     await mkdir(path.dirname(this.config.sqlitePath), { recursive: true });
     this.db = new Database(this.config.sqlitePath);
+    if (this.config.seedDefaultData) seedDefaultSqliteData(this.db);
     return this.db;
   }
 
@@ -200,4 +201,67 @@ function leadingKeyword(statement) {
 
 function normalizedMaxRows(maxRows) {
   return Number.isInteger(maxRows) && maxRows > 0 ? maxRows : 2_000;
+}
+
+function seedDefaultSqliteData(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS raftbot_demo_customers (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      plan TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS raftbot_demo_orders (
+      id INTEGER PRIMARY KEY,
+      customer_id INTEGER NOT NULL REFERENCES raftbot_demo_customers(id),
+      item TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS raftbot_demo_events (
+      id INTEGER PRIMARY KEY,
+      customer_id INTEGER NOT NULL REFERENCES raftbot_demo_customers(id),
+      event_type TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+  const existing = db.prepare("SELECT COUNT(*) AS count FROM raftbot_demo_customers").get();
+  if (Number(existing?.count ?? 0) > 0) return;
+  const insertCustomer = db.prepare(`
+    INSERT INTO raftbot_demo_customers (id, name, email, plan, created_at)
+    VALUES (@id, @name, @email, @plan, @created_at)
+  `);
+  const insertOrder = db.prepare(`
+    INSERT INTO raftbot_demo_orders (id, customer_id, item, amount_cents, status, created_at)
+    VALUES (@id, @customer_id, @item, @amount_cents, @status, @created_at)
+  `);
+  const insertEvent = db.prepare(`
+    INSERT INTO raftbot_demo_events (id, customer_id, event_type, metadata_json, created_at)
+    VALUES (@id, @customer_id, @event_type, @metadata_json, @created_at)
+  `);
+  const seed = db.transaction(() => {
+    for (const row of [
+      { id: 1, name: "Ada Lovelace", email: "ada@example.test", plan: "pro", created_at: "2026-01-04T09:15:00Z" },
+      { id: 2, name: "Grace Hopper", email: "grace@example.test", plan: "enterprise", created_at: "2026-01-12T11:30:00Z" },
+      { id: 3, name: "Katherine Johnson", email: "katherine@example.test", plan: "starter", created_at: "2026-02-02T16:45:00Z" },
+      { id: 4, name: "Margaret Hamilton", email: "margaret@example.test", plan: "pro", created_at: "2026-02-18T14:20:00Z" }
+    ]) insertCustomer.run(row);
+    for (const row of [
+      { id: 101, customer_id: 1, item: "compute credits", amount_cents: 12500, status: "paid", created_at: "2026-03-01T10:00:00Z" },
+      { id: 102, customer_id: 1, item: "priority support", amount_cents: 4500, status: "paid", created_at: "2026-03-05T10:00:00Z" },
+      { id: 103, customer_id: 2, item: "enterprise seats", amount_cents: 98000, status: "paid", created_at: "2026-03-07T12:30:00Z" },
+      { id: 104, customer_id: 3, item: "starter renewal", amount_cents: 1900, status: "open", created_at: "2026-03-09T08:15:00Z" },
+      { id: 105, customer_id: 4, item: "migration services", amount_cents: 30000, status: "refunded", created_at: "2026-03-11T13:05:00Z" }
+    ]) insertOrder.run(row);
+    for (const row of [
+      { id: 1001, customer_id: 1, event_type: "login", metadata_json: "{\"source\":\"web\"}", created_at: "2026-03-12T09:01:00Z" },
+      { id: 1002, customer_id: 2, event_type: "export", metadata_json: "{\"rows\":240}", created_at: "2026-03-12T09:05:00Z" },
+      { id: 1003, customer_id: 3, event_type: "upgrade_prompt", metadata_json: "{\"campaign\":\"spring\"}", created_at: "2026-03-12T09:08:00Z" },
+      { id: 1004, customer_id: 4, event_type: "support_ticket", metadata_json: "{\"priority\":\"high\"}", created_at: "2026-03-12T09:12:00Z" }
+    ]) insertEvent.run(row);
+  });
+  seed();
 }
