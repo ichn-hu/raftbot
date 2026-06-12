@@ -256,6 +256,10 @@ export async function startBotDaemon(bots, options) {
         await messageHandler(ctx);
       }
       if (!parsed) {
+        if (await maybeReplyWithDmHelp(agentState, ctx, parsed, null)) {
+          sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
+          return;
+        }
         log("command.skip", { reason: "not_slash", agentId: msg.agentId, messageId: event.id });
         sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
         return;
@@ -273,6 +277,10 @@ export async function startBotDaemon(bots, options) {
       }
       const handler = agentState.bot.commands.get(parsed.name);
       if (!handler) {
+        if (await maybeReplyWithDmHelp(agentState, ctx, parsed, null)) {
+          sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
+          return;
+        }
         log("command.skip", { reason: "unknown_command", command: parsed.name, agentId: msg.agentId, messageId: event.id });
         sendActivity(msg.agentId, "online", "Process idle", msg.launchId);
         return;
@@ -298,6 +306,15 @@ export async function startBotDaemon(bots, options) {
   }
 
   function createContext(msg, event, parsed) {
+    let replied = false;
+    async function reply(message, options = {}) {
+      replied = true;
+      await sendContextMessage(msg.agentId, options.target ?? event.replyTarget, message, {
+        ...options,
+        seenUpToSeq: msg.seq
+      });
+    }
+
     return {
       ...createAgentContext(msg.agentId),
       event,
@@ -306,16 +323,30 @@ export async function startBotDaemon(bots, options) {
       async uploadAttachment(input) {
         return agentApi.uploadAttachment(msg.agentId, input.target ?? event.replyTarget, input);
       },
-      async reply(message, options = {}) {
-        await sendContextMessage(msg.agentId, options.target ?? event.replyTarget, message, {
-          ...options,
-          seenUpToSeq: msg.seq
-        });
-      },
+      reply,
       async send(target, message, options = {}) {
+        replied = true;
         await sendContextMessage(msg.agentId, target, message, options);
-      }
+      },
+      _raftbotDidReply: () => replied
     };
+  }
+
+  async function maybeReplyWithDmHelp(agentState, ctx, parsed, handler) {
+    const shouldReply = shouldSendDmUnrecognizedFallback(
+      ctx.event,
+      parsed,
+      handler,
+      ctx._raftbotDidReply?.() === true
+    );
+    if (!shouldReply) return false;
+
+    const helpHandler = agentState.bot.commands.get("help");
+    await ctx.reply(formatUnrecognizedDmFallback({ hasHelp: Boolean(helpHandler) }));
+    if (helpHandler) {
+      await helpHandler({ ...ctx, command: "help", args: [] });
+    }
+    return true;
   }
 
   function createAgentContext(agentId) {
@@ -764,4 +795,17 @@ export function parseSlashCommand(text) {
   const name = rawName.toLowerCase();
   if (!name) return null;
   return { name, args };
+}
+
+export function shouldSendDmUnrecognizedFallback(event, parsed, handler, didReply = false) {
+  return event?.surface?.kind === "dm"
+    && event.addressed === true
+    && didReply !== true
+    && (!parsed || !handler);
+}
+
+export function formatUnrecognizedDmFallback(options = {}) {
+  return options.hasHelp === false
+    ? "Unrecognized message. This bot does not provide /help."
+    : "Unrecognized message. Showing /help:";
 }

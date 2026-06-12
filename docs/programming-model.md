@@ -78,6 +78,7 @@ The default command router should be conservative in channels and conversational
 | Channel, mentioned | `@DbBot /sql select 1` | Accepted; `ctx.reply()` creates/replies in a thread under the invoking message |
 | Thread | `/approve sql_123` | Accepted without `@DbBot` |
 | DM | `/help` | Accepted without `@DbBot` |
+| DM, unrecognized | `hello` or `/wat` | Replies that the message was not recognized, then invokes `/help` when the bot provides a help command |
 
 This gives the desired user model:
 
@@ -85,6 +86,7 @@ This gives the desired user model:
 2. The bot replies in a thread under that channel message.
 3. Inside that thread, the bot has the turn context, so follow-up commands do not need another `@DbBot`.
 4. In DM, the whole conversation is already addressed to the bot.
+5. If a DM message cannot be routed to a bot command, the framework gives the user a clear unrecognized-message response and then shows the bot's `/help` output when available.
 
 Bot authors can opt into ambient channel commands with:
 
