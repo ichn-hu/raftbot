@@ -24,9 +24,9 @@ The bot is deterministic. It classifies SQL, presents approval summaries, record
 
 - `/help`: show usage and current database target.
 - `/sql <statement...>`: classify and execute or request approval.
-- `/approve <requestId>`: manager approval, then execute the pending write transaction.
-- `/reject <requestId>`: manager rejection.
-- `/dm <requestId> @manager [@manager...]`: send explicit DM reminders to selected managers for a pending request.
+- `/approve <requestId>`: manager approval, then execute the pending write transaction. Works in the original thread or in a manager DM with the bot.
+- `/reject <requestId>`: manager rejection. Works in the original thread or in a manager DM with the bot.
+- `/dm <requestId> @manager [@manager...]`: send explicit DM reminders to selected managers for a pending request. Managers can decide from that DM.
 - `/status <requestId>`: show request status.
 - `/config show`: show current bot-instance configuration. DM only.
 - `/config db sqlite [path]`: configure SQLite. If path is omitted, use the Agent workspace default db. DM only.
@@ -153,9 +153,11 @@ The bot classifies it as write SQL, snapshots the current execution target into 
 
 The bot mentions all configured managers in that same thread.
 
+If the write request starts in DM with the bot, managers cannot participate in the requester's DM. In that case, the bot replies to the requester that manager approval is required and proactively sends the approval summary to all configured managers by DM.
+
 ### 7. Manager Approves Or Rejects
 
-Any configured manager can reply in the request thread:
+Any configured manager can reply in the request thread or in their DM with the bot:
 
 ```text
 /approve sql_abc123
@@ -167,7 +169,9 @@ or:
 /reject sql_abc123
 ```
 
-On approval, the bot executes all statements against the target snapshot captured when the request was created, not whatever target is currently configured. It executes in one transaction. If any statement fails, it rolls the transaction back and reports the error. If all statements succeed, it commits and reports affected row count.
+On approval, the bot executes all statements against the target snapshot captured when the request was created, not whatever target is currently configured. It executes in one transaction. If any statement fails, it rolls the transaction back and reports the error. If all statements succeed, it commits and reports statement count and affected row count when the driver can provide it.
+
+When a manager decides from DM, the bot replies in the manager DM and also sends the same decision/execution result back to the original request context so the requester and any thread participants can see the outcome.
 
 ### 8. Someone Forces A Manager DM
 
@@ -177,7 +181,7 @@ If the thread mention is not enough, a user can force a DM reminder to selected 
 /dm sql_abc123 @alice @bob
 ```
 
-The bot sends a DM to those managers with the approval summary and a pointer back to the original thread. The actual approval still happens in the original thread for a centralized audit trail.
+The bot sends a DM to those managers with the approval summary and a pointer back to the original context. Managers can approve or reject from that DM; the bot records the audit entry and posts the result back to the original context.
 
 ### 9. User Checks Request Status
 
