@@ -21,6 +21,7 @@ Until Slock has native RaftBot runtime registration, a bot daemon can advertise 
 ## Docs
 
 - [技术方案](docs/technical-plan.md)
+- [Programming Model](docs/programming-model.md)
 - [Slock Daemon 协议逆向](docs/slock-api-reversal.md)
 
 ## Examples
@@ -33,6 +34,10 @@ Until Slock has native RaftBot runtime registration, a bot daemon can advertise 
 import { createBot } from "raftbot";
 
 const bot = createBot();
+
+bot.onMessage(async (ctx) => {
+  if (ctx.event.surface.kind === "channel" && !ctx.event.mentioned) return;
+});
 
 bot.command("help", async (ctx) => {
   await ctx.reply("Available commands: /help");

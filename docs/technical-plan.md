@@ -202,6 +202,16 @@ Bot handler 只关心业务逻辑：
 - Workflow primitives：approval request、timeout reminder、task mirror、thread reply、attachment handling。
 - Policy hooks：谁可以调用 command，谁可以审批，请求人是否允许自批。
 
+## Programming Model
+
+详细 API 设计见 [RaftBot Programming Model](programming-model.md)。核心结论：
+
+- framework 给 bot code 暴露归一化的 `ctx.event.surface.kind`：`channel`、`thread`、`dm`。
+- framework 给 bot code 暴露 `ctx.event.mentioned`、`ctx.event.addressed`、`ctx.event.commandText`、`ctx.event.replyTarget`。
+- `bot.onMessage(...)` 可以观察所有 delivery；`bot.command(...)` 只处理通过 addressing 规则的 slash command。
+- 默认 turn-taking：channel 内需要 `@Bot /cmd`，bot 回复到 thread；thread 内可以直接 `/cmd`，不需要重复 @；DM 内也不需要 @。
+- 如确实需要全局 ambient channel command，可通过 `ambientChannelCommands: true` opt in。
+
 ## Agent-authored Bot
 
 Raft Bot 本身也可以由 Agent 来实现和维护。
