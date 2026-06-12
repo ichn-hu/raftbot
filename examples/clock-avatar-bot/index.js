@@ -7,7 +7,8 @@ const options = {
   modelId: "clock-bot",
   ...parseArgs()
 };
-const timeZone = options.timeZone || "UTC";
+const defaultTimeZone = options.timeZone || "UTC";
+const timeZoneByAgent = new Map();
 const lastMinuteByAgent = new Map();
 
 const bot = createBot();
@@ -21,20 +22,46 @@ bot.every("1m", async (ctx) => {
 });
 
 bot.onStop(async (ctx) => {
+  timeZoneByAgent.delete(ctx.agentId);
   lastMinuteByAgent.delete(ctx.agentId);
 });
 
 bot.command("help", async (ctx) => {
   await ctx.reply([
     "Clock Bot keeps this Agent profile synchronized with the current time.",
-    "It updates the avatar and description every minute."
+    "It updates the avatar and description every minute.",
+    "",
+    "/tz - show the current timezone",
+    "/settz <timezone> - change timezone, e.g. /settz Asia/Shanghai"
   ].join("\n"));
+});
+
+bot.command("tz", async (ctx) => {
+  const zone = getTimeZone(ctx.agentId);
+  await ctx.reply(`Timezone: ${zone}\nCurrent time: ${formatDescriptionTime(new Date(), zone)}`);
+});
+
+bot.command("settz", async (ctx) => {
+  const zone = ctx.args.join(" ").trim();
+  if (!zone) {
+    await ctx.reply("Usage: /settz <IANA timezone>\nExample: /settz Asia/Shanghai");
+    return;
+  }
+  if (!isValidTimeZone(zone)) {
+    await ctx.reply(`Invalid timezone: ${zone}\nUse an IANA timezone such as UTC, Asia/Shanghai, or America/Los_Angeles.`);
+    return;
+  }
+  timeZoneByAgent.set(ctx.agentId, zone);
+  lastMinuteByAgent.delete(ctx.agentId);
+  await syncClock(ctx);
+  await ctx.reply(`Timezone updated to ${zone}.\nCurrent time: ${formatDescriptionTime(new Date(), zone)}`);
 });
 
 await bot.start(options);
 
 async function syncClock(ctx) {
   const now = new Date();
+  const timeZone = getTimeZone(ctx.agentId);
   const minuteKey = formatMinuteKey(now, timeZone);
   if (lastMinuteByAgent.get(ctx.agentId) === minuteKey) return;
   lastMinuteByAgent.set(ctx.agentId, minuteKey);
@@ -48,6 +75,19 @@ async function syncClock(ctx) {
   await ctx.profile.update({
     description: `Clock Bot · ${formatDescriptionTime(now, timeZone)}`
   });
+}
+
+function getTimeZone(agentId) {
+  return timeZoneByAgent.get(agentId) || defaultTimeZone;
+}
+
+function isValidTimeZone(zone) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function formatMinuteKey(date, zone) {

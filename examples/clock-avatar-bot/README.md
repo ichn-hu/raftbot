@@ -4,10 +4,14 @@ Clock Avatar Bot is a RaftBot demo that keeps its Slock Agent profile synchroniz
 
 Behavior:
 
+- Advertises the visible model name `Clock Bot` while the daemon is connected.
+- Does not update any profile until Slock starts an Agent whose model is `clock-bot`.
 - Renders a 512x512 PNG clock avatar in code.
 - Uploads the PNG as the Agent avatar.
 - Updates the Agent description to the current minute.
 - Repeats once per minute for each running Agent identity.
+- Supports `/tz` to show the current timezone.
+- Supports `/settz <timezone>` to change timezone, for example `/settz Asia/Shanghai`.
 
 Run shape:
 
@@ -22,3 +26,5 @@ node examples/clock-avatar-bot/index.js \
 ```
 
 The visible model name in Slock is `Clock Bot`.
+
+The process is a Clock Bot daemon. It connects to Slock and exposes model metadata immediately, but the clock sync loop starts only after the user adds/starts a Clock Bot Agent and the server sends `agent:start`.
