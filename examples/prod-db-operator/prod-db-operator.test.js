@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { snapshotExecutionTarget } from "./bot.js";
+import { resolveTargetConfig, snapshotExecutionTarget } from "./bot.js";
 import { createDatabaseAdapter, readStatementForExecution } from "./db-adapters.js";
 import { createResultResponse } from "./result-renderer.js";
 import { classifySql } from "./sql-utils.js";
@@ -87,6 +87,28 @@ test("default sqlite adapter seeds demo data once", async () => {
   }
 });
 
+test("default sqlite seed marker survives real config resolution path", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
+  try {
+    const ctx = { workspace: { path: dir } };
+    const storedConfig = { driver: "sqlite", sqlitePath: "", databaseUrl: "" };
+    const resolvedFromGetConfig = resolveTargetConfig(ctx, storedConfig);
+    assert.equal(resolvedFromGetConfig.seedDefaultData, true);
+    assert.equal(resolvedFromGetConfig.sqlitePath, path.join(dir, "prod-db-operator.sqlite"));
+
+    const resolvedFromGetAdapter = resolveTargetConfig(ctx, resolvedFromGetConfig);
+    assert.equal(resolvedFromGetAdapter.seedDefaultData, true);
+    assert.equal(resolvedFromGetAdapter.sqlitePath, path.join(dir, "prod-db-operator.sqlite"));
+
+    const adapter = await createDatabaseAdapter(resolvedFromGetAdapter);
+    const result = await adapter.query(["select count(*) as count from raftbot_demo_customers"], { maxRows: 10 });
+    assert.deepEqual(result.results[0].rows, [{ count: 4 }]);
+    await adapter.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("explicit sqlite adapter does not seed demo data", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
   try {
@@ -131,7 +153,22 @@ test("approval requests snapshot immutable execution target fields", () => {
   assert.deepEqual(snapshot, {
     driver: "pg",
     databaseUrl: "postgres://app:secret@old.example/db",
-    sqlitePath: "/tmp/old.sqlite"
+    sqlitePath: "/tmp/old.sqlite",
+    seedDefaultData: false
+  });
+});
+
+test("approval target snapshot preserves default sqlite seed marker", () => {
+  const dir = path.join(os.tmpdir(), "raftbot-prod-db-default");
+  const ctx = { workspace: { path: dir } };
+  const config = resolveTargetConfig(ctx, { driver: "sqlite", sqlitePath: "", databaseUrl: "" });
+  const snapshot = snapshotExecutionTarget(config);
+
+  assert.deepEqual(snapshot, {
+    driver: "sqlite",
+    databaseUrl: "",
+    sqlitePath: path.join(dir, "prod-db-operator.sqlite"),
+    seedDefaultData: true
   });
 });
 

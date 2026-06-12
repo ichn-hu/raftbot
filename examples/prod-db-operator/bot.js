@@ -425,8 +425,8 @@ function normalizeDefaults(options) {
   };
 }
 
-function resolveTargetConfig(ctx, config) {
-  const usesDefaultSqlitePath = config.driver === "sqlite" && !config.sqlitePath;
+export function resolveTargetConfig(ctx, config) {
+  const usesDefaultSqlitePath = config.driver === "sqlite" && (config.seedDefaultData === true || !config.sqlitePath);
   const sqlitePath = config.driver === "sqlite" ? config.sqlitePath || path.join(ctx.workspace.path, "prod-db-operator.sqlite") : "";
   return { ...config, sqlitePath, seedDefaultData: usesDefaultSqlitePath };
 }
@@ -435,7 +435,8 @@ export function snapshotExecutionTarget(config) {
   return {
     driver: config.driver,
     databaseUrl: config.databaseUrl || "",
-    sqlitePath: config.sqlitePath || ""
+    sqlitePath: config.sqlitePath || "",
+    seedDefaultData: config.seedDefaultData === true
   };
 }
 
