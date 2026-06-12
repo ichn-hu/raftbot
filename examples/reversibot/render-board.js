@@ -12,7 +12,7 @@ export function renderBoardHtml(game) {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Reversibot ${escapeHtml(game.id)}</title>
 <style>
 :root {
@@ -25,11 +25,18 @@ export function renderBoardHtml(game) {
   --move: #f2c14e;
 }
 * { box-sizing: border-box; }
+html {
+  width: 100%;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
 body {
   margin: 0;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink);
   background: #fbfaf7;
+  width: 100%;
+  overflow-x: hidden;
 }
 .wrap {
   max-width: 760px;
@@ -69,6 +76,7 @@ h1 {
   max-width: 460px;
   background: var(--board-dark);
   border: 2px solid #173b28;
+  touch-action: manipulation;
 }
 .coord {
   display: grid;
@@ -87,6 +95,7 @@ h1 {
   min-height: 0;
   position: relative;
   font: inherit;
+  touch-action: manipulation;
 }
 .disc {
   width: 68%;
@@ -112,6 +121,21 @@ h1 {
   font-weight: 800;
   font-size: 18px;
   background: rgba(20, 30, 24, .18);
+}
+.legal.selected::before {
+  animation: selectedPulse .72s ease-in-out infinite alternate;
+  border-color: #fff4a8;
+  box-shadow: 0 0 0 4px rgba(242,193,78,.2), 0 0 18px rgba(242,193,78,.72);
+}
+@keyframes selectedPulse {
+  from {
+    transform: scale(.92);
+    filter: brightness(.95);
+  }
+  to {
+    transform: scale(1.06);
+    filter: brightness(1.24);
+  }
 }
 .side {
   display: grid;
@@ -153,8 +177,13 @@ ol { padding-left: 20px; }
 }
 .copybox {
   position: fixed;
-  left: -9999px;
+  left: 0;
   top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  font-size: 16px;
 }
 .hint {
   min-height: 21px;
@@ -210,7 +239,15 @@ document.querySelectorAll("[data-command]").forEach((el) => {
   el.addEventListener("click", async () => {
     const command = el.getAttribute("data-command");
     box.value = command;
-    box.focus();
+    document.querySelectorAll(".legal.selected").forEach((selected) => {
+      selected.classList.remove("selected");
+    });
+    el.classList.add("selected");
+    try {
+      box.focus({ preventScroll: true });
+    } catch {
+      box.focus();
+    }
     box.select();
     hint.textContent = command + " selected. Press Ctrl+C / Cmd+C, then paste in the Slock thread.";
     try {
