@@ -83,7 +83,7 @@ The framework maps these calls to Slock profile APIs:
 - `POST /internal/agent/<agentId>/profile` for description/displayName/avatarUrl.
 - multipart `POST /internal/agent/<agentId>/profile/avatar` for image avatar upload.
 
-The framework uses the Agent runner credential for these requests, so bot code does not touch machine credentials or profile endpoints directly. Runner credential minting stays within the deployed Slock server's supported scope list.
+The framework uses the daemon's machine credential for these profile write requests because the deployed Slock server requires machine-auth on the Agent profile routes. Bot code only receives `ctx.profile`; it does not touch machine credentials or profile endpoints directly. Runner credential minting stays within the deployed Slock server's supported scope list for Agent API actions such as message send.
 
 ## Context
 

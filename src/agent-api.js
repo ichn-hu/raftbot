@@ -53,12 +53,11 @@ export class AgentApiClient {
     if (Object.keys(body).length === 0) {
       throw new Error("profile_update_failed: no profile fields provided");
     }
-    const credential = await this.getAgentCredential(agentId);
     log("agent_api.profile.update.start", { agentId, fields: Object.keys(body) });
     const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/profile`, this.serverUrl), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${credential.apiKey}`,
+        Authorization: `Bearer ${this.machineApiKey}`,
         "Content-Type": "application/json",
         "X-Agent-Id": agentId,
         "X-Slock-Client": "raftbot"
@@ -76,7 +75,6 @@ export class AgentApiClient {
   }
 
   async updateAvatar(agentId, input) {
-    const credential = await this.getAgentCredential(agentId);
     const filename = input.filename ?? "avatar.png";
     const mimeType = input.mimeType ?? "image/png";
     const bytes = input.bytes instanceof Uint8Array ? input.bytes : Uint8Array.from(input.bytes ?? []);
@@ -89,7 +87,7 @@ export class AgentApiClient {
     const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/profile/avatar`, this.serverUrl), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${credential.apiKey}`,
+        Authorization: `Bearer ${this.machineApiKey}`,
         "X-Agent-Id": agentId,
         "X-Slock-Client": "raftbot"
       },

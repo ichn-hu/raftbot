@@ -60,7 +60,6 @@ export function createClockAvatarBot(options = {}) {
     const timeZone = await getTimeZone(ctx);
     const minuteKey = formatMinuteKey(now, timeZone);
     if (lastMinuteByAgent.get(ctx.agentId) === minuteKey) return;
-    lastMinuteByAgent.set(ctx.agentId, minuteKey);
 
     const png = renderClockPng(now);
     await ctx.profile.setAvatar({
@@ -71,6 +70,7 @@ export function createClockAvatarBot(options = {}) {
     await ctx.profile.update({
       description: `Clock Bot · ${formatDescriptionTime(now, timeZone)}`
     });
+    lastMinuteByAgent.set(ctx.agentId, minuteKey);
   }
 
   async function getTimeZone(ctx) {

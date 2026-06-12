@@ -76,6 +76,7 @@ export async function startBotDaemon(bots, options) {
     ? options.defaultModelId
     : definitions[0].modelId;
   const agents = new Map();
+  const startingAgents = new Map();
   const stateStore = new JsonStateStore(resolveWorkspaceRoot(options));
   const agentApi = new AgentApiClient({
     serverUrl: options.serverUrl,
@@ -106,47 +107,13 @@ export async function startBotDaemon(bots, options) {
         break;
       case "agent:start":
         {
-          const definition = selectBotForAgentStart(msg.config);
-          if (!definition) {
-            log("agent.start.ignored", {
-              agentId: msg.agentId,
-              runtime: msg.config?.runtime,
-              model: msg.config?.model,
-              availableModels: models.map((model) => model.id)
-            });
-            connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
-            sendActivity(msg.agentId, "offline", "RaftBot model mismatch", msg.launchId);
-            break;
+          const startPromise = handleAgentStart(msg);
+          startingAgents.set(msg.agentId, startPromise);
+          try {
+            await startPromise;
+          } finally {
+            if (startingAgents.get(msg.agentId) === startPromise) startingAgents.delete(msg.agentId);
           }
-          const botOptions = mergedBotOptions(definition, options);
-          const profile = await loadAgentProfile(msg.agentId);
-          const mentionNames = buildMentionNames(profile, botOptions);
-          log("agent.start", {
-            agentId: msg.agentId,
-            launchId: msg.launchId,
-            runtime: msg.config?.runtime,
-            model: msg.config?.model,
-            botModel: definition.modelId,
-            profileName: profile?.name,
-            displayName: profile?.displayName,
-            mentionNames
-          });
-          agents.set(msg.agentId, {
-            bot: definition,
-            botOptions,
-            launchId: msg.launchId,
-            activity: "online",
-            detail: "RaftBot ready",
-            clientSeq: 1,
-            profile,
-            mentionNames,
-            workspacePath: stateStore.forAgent(msg.agentId).workspacePath,
-            jobs: []
-          });
-          connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
-          sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
-          await runStartHandlers(msg.agentId);
-          startScheduledJobs(msg.agentId);
           break;
         }
       case "agent:stop":
@@ -223,7 +190,56 @@ export async function startBotDaemon(bots, options) {
     }
   }
 
+  async function handleAgentStart(msg) {
+    const definition = selectBotForAgentStart(msg.config);
+    if (!definition) {
+      log("agent.start.ignored", {
+        agentId: msg.agentId,
+        runtime: msg.config?.runtime,
+        model: msg.config?.model,
+        availableModels: models.map((model) => model.id)
+      });
+      connection.send({ type: "agent:status", agentId: msg.agentId, status: "inactive", launchId: msg.launchId });
+      sendActivity(msg.agentId, "offline", "RaftBot model mismatch", msg.launchId);
+      return;
+    }
+    const botOptions = mergedBotOptions(definition, options);
+    const profile = await loadAgentProfile(msg.agentId);
+    const mentionNames = buildMentionNames(profile, botOptions);
+    log("agent.start", {
+      agentId: msg.agentId,
+      launchId: msg.launchId,
+      runtime: msg.config?.runtime,
+      model: msg.config?.model,
+      botModel: definition.modelId,
+      profileName: profile?.name,
+      displayName: profile?.displayName,
+      mentionNames
+    });
+    agents.set(msg.agentId, {
+      bot: definition,
+      botOptions,
+      launchId: msg.launchId,
+      activity: "online",
+      detail: "RaftBot ready",
+      clientSeq: 1,
+      profile,
+      mentionNames,
+      workspacePath: stateStore.forAgent(msg.agentId).workspacePath,
+      jobs: []
+    });
+    connection.send({ type: "agent:status", agentId: msg.agentId, status: "active", launchId: msg.launchId });
+    sendActivity(msg.agentId, "online", "RaftBot ready", msg.launchId);
+    await runStartHandlers(msg.agentId);
+    startScheduledJobs(msg.agentId);
+  }
+
   async function handleDelivery(msg) {
+    const startPromise = startingAgents.get(msg.agentId);
+    if (startPromise) {
+      log("agent.deliver.wait_for_start", { agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
+      await startPromise.catch(() => {});
+    }
     const agentState = agents.get(msg.agentId);
     if (!agentState) {
       log("agent.deliver.unknown_agent", { agentId: msg.agentId, seq: msg.seq, deliveryId: msg.deliveryId });
