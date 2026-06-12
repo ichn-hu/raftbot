@@ -11,9 +11,10 @@
     ".": "./src/index.js"
   },
   "scripts": {
-    "check": "node --check src/*.js && node --check examples/prod-db-operator/*.js && node --check examples/clock-avatar-bot/*.js && node --check examples/all-bots/*.js"
+    "check": "node --check src/*.js && node --check examples/prod-db-operator/*.js && node --check examples/clock-avatar-bot/*.js && node --check examples/reversibot/*.js && node --check examples/all-bots/*.js && node --test examples/reversibot/*.test.js"
   },
   "dependencies": {
+    "@llmletsplay/versus-othello": "^0.1.1",
     "ws": "^8.20.0"
   },
   "engines": {

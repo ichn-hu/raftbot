@@ -105,7 +105,22 @@ interface BotContext {
       bytes: Uint8Array | Buffer;
     }): Promise<AgentProfile>;
   };
-  reply?(text: string): Promise<void>;
+  uploadAttachment?(input: {
+    target?: string;
+    filename: string;
+    mimeType: string;
+    bytes: Uint8Array | Buffer;
+  }): Promise<Attachment>;
+  reply?(text: string, options?: {
+    target?: string;
+    attachmentIds?: string[];
+    attachments?: Array<{
+      target?: string;
+      filename: string;
+      mimeType: string;
+      bytes: Uint8Array | Buffer;
+    }>;
+  }): Promise<void>;
   event?: BotMessageEvent;
 }
 ```
@@ -113,6 +128,24 @@ interface BotContext {
 Message command contexts additionally include `event`, `command`, `args`, and `reply()`. Lifecycle and scheduled contexts omit message-specific fields.
 
 `ctx.reply()` is command-scoped. If Slock's human-facing freshness guard holds the first send because newer messages arrived, the framework retries the same deterministic reply with the server-returned `seenUpToSeq` and `continueAnyway` semantics instead of surfacing a draft workflow to bot code.
+
+## Attachments
+
+Bots can attach generated artifacts to replies without handling Slock upload routes directly:
+
+```js
+await ctx.reply("Board snapshot attached.", {
+  attachments: [{
+    filename: "board.html",
+    mimeType: "text/html",
+    bytes: new TextEncoder().encode(html)
+  }]
+});
+```
+
+The framework resolves the reply target to a Slock channel id, uploads each attachment with the runner credential, then sends the reply with `attachmentIds`. HTML attachments should pass `mimeType: "text/html"` explicitly so the server renders/downloads them correctly.
+
+For advanced flows, `ctx.uploadAttachment(input)` returns the raw uploaded attachment response, and `ctx.reply(text, { attachmentIds })` can attach previously uploaded files.
 
 ## Workspace And State
 

@@ -10,17 +10,20 @@ export class AgentApiClient {
 
   async sendMessage(agentId, target, content, options = {}) {
     const credential = await this.getAgentCredential(agentId);
+    const attachmentIds = normalizeAttachmentIds(options.attachmentIds);
     log("agent_api.send.start", {
       agentId,
       target,
       seenUpToSeq: options.seenUpToSeq,
-      contentLength: content.length
+      contentLength: content.length,
+      attachmentCount: attachmentIds.length
     });
     const body = {
       target,
       content,
       draftReholdCount: 0,
-      ...Number.isInteger(options.seenUpToSeq) && options.seenUpToSeq > 0 ? { seenUpToSeq: options.seenUpToSeq } : {}
+      ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+      ...(Number.isInteger(options.seenUpToSeq) && options.seenUpToSeq > 0 ? { seenUpToSeq: options.seenUpToSeq } : {})
     };
     const first = await this.postSend(agentId, credential, body);
     if (first?.state !== "held") {
@@ -34,7 +37,8 @@ export class AgentApiClient {
       draftReholdCount: 1,
       sendDraft: true,
       continueAnyway: true,
-      ...Number.isInteger(first.seenUpToSeq) && first.seenUpToSeq > 0 ? { seenUpToSeq: first.seenUpToSeq } : {}
+      ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+      ...(Number.isInteger(first.seenUpToSeq) && first.seenUpToSeq > 0 ? { seenUpToSeq: first.seenUpToSeq } : {})
     });
     if (retry?.state === "held") {
       log("agent_api.send.rehold", { agentId, target, seenUpToSeq: retry.seenUpToSeq });
@@ -42,6 +46,76 @@ export class AgentApiClient {
     }
     log("agent_api.send.ok", { agentId, target, messageId: retry.messageId, freshnessRetry: true });
     return retry;
+  }
+
+  async uploadAttachment(agentId, target, input) {
+    const credential = await this.getAgentCredential(agentId);
+    const filename = input.filename ?? "attachment";
+    const mimeType = input.mimeType ?? "application/octet-stream";
+    const bytes = input.bytes instanceof Uint8Array ? input.bytes : Uint8Array.from(input.bytes ?? []);
+    if (bytes.byteLength === 0) {
+      throw new Error("attachment_upload_failed: empty attachment bytes");
+    }
+
+    const channelId = await this.resolveChannel(agentId, credential, target);
+    const form = new FormData();
+    form.append("file", new Blob([bytes], { type: mimeType }), filename);
+    form.append("channelId", channelId);
+    if (input.mimeType) form.append("mimeType", mimeType);
+
+    log("agent_api.attachment.upload.start", {
+      agentId,
+      target,
+      channelId,
+      filename,
+      mimeType,
+      size: bytes.byteLength
+    });
+    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/upload`, this.serverUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.apiKey}`,
+        "X-Agent-Id": agentId,
+        "X-Slock-Client": "raftbot"
+      },
+      body: form
+    });
+    if (!res.ok) {
+      const detail = await safeErrorDetail(res);
+      log("agent_api.attachment.upload.failed", { agentId, target, status: res.status, detail });
+      throw new Error(`attachment_upload_failed: HTTP ${res.status} ${detail}`);
+    }
+    const body = await res.json().catch(() => ({}));
+    if (typeof body.id !== "string" || !body.id) {
+      throw new Error(`attachment_upload_failed: invalid upload response ${JSON.stringify(body).slice(0, 300)}`);
+    }
+    log("agent_api.attachment.upload.ok", { agentId, target, attachmentId: body.id });
+    return body;
+  }
+
+  async resolveChannel(agentId, credential, target) {
+    log("agent_api.resolve_channel.start", { agentId, target });
+    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/resolve-channel`, this.serverUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.apiKey}`,
+        "Content-Type": "application/json",
+        "X-Agent-Id": agentId,
+        "X-Slock-Client": "raftbot"
+      },
+      body: JSON.stringify({ target })
+    });
+    if (!res.ok) {
+      const detail = await safeErrorDetail(res);
+      log("agent_api.resolve_channel.failed", { agentId, target, status: res.status, detail });
+      throw new Error(`resolve_channel_failed: HTTP ${res.status} ${detail}`);
+    }
+    const body = await res.json().catch(() => ({}));
+    if (typeof body.channelId !== "string" || !body.channelId) {
+      throw new Error(`resolve_channel_failed: invalid response ${JSON.stringify(body).slice(0, 300)}`);
+    }
+    log("agent_api.resolve_channel.ok", { agentId, target, channelId: body.channelId });
+    return body.channelId;
   }
 
   async postSend(agentId, credential, body) {
@@ -183,4 +257,9 @@ export class AgentApiClient {
 async function safeErrorDetail(res) {
   const text = await res.text().catch(() => "");
   return text.slice(0, 300);
+}
+
+function normalizeAttachmentIds(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string" && item.length > 0);
 }
