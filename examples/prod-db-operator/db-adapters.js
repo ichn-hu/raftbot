@@ -29,7 +29,7 @@ class PgAdapter {
     try {
       const results = [];
       for (const statement of statements) {
-        const result = await client.query(cappedReadStatement(statement, options.maxRows));
+        const result = await client.query(readStatementForExecution(statement, options.maxRows));
         results.push(normalizeRows(statement, result.rows ?? [], options.maxRows));
       }
       return { results };
@@ -73,7 +73,7 @@ class MySqlAdapter {
     try {
       const results = [];
       for (const statement of statements) {
-        const [rows] = await connection.query(cappedReadStatement(statement, options.maxRows));
+        const [rows] = await connection.query(readStatementForExecution(statement, options.maxRows));
         results.push(normalizeRows(statement, Array.isArray(rows) ? rows : [], options.maxRows));
       }
       return { results };
@@ -123,7 +123,7 @@ class SqliteAdapter {
     const db = await this.open();
     const results = statements.map((statement) => normalizeRows(
       statement,
-      db.prepare(cappedReadStatement(statement, options.maxRows)).all(),
+      db.prepare(readStatementForExecution(statement, options.maxRows)).all(),
       options.maxRows
     ));
     return { results };
@@ -160,15 +160,42 @@ function normalizeRows(statement, rows, maxRows = 2_000) {
   };
 }
 
+export function readStatementForExecution(statement, maxRows = 2_000) {
+  const sql = stripTrailingSemicolons(statement);
+  return supportsOuterLimit(sql) ? cappedReadStatement(sql, maxRows) : sql;
+}
+
 function cappedReadStatement(statement, maxRows = 2_000) {
   const cap = normalizedMaxRows(maxRows);
   const fetchRows = cap + 1;
-  const sql = stripTrailingSemicolons(statement);
-  return `SELECT * FROM (${sql}) AS raftbot_read_cap LIMIT ${fetchRows}`;
+  return `SELECT * FROM (${statement}) AS raftbot_read_cap LIMIT ${fetchRows}`;
 }
 
 function stripTrailingSemicolons(statement) {
   return String(statement ?? "").trim().replace(/;+$/, "").trim();
+}
+
+function supportsOuterLimit(statement) {
+  const keyword = leadingKeyword(statement);
+  return keyword === "select" || keyword === "with";
+}
+
+function leadingKeyword(statement) {
+  let text = String(statement ?? "").trimStart();
+  while (true) {
+    if (text.startsWith("--")) {
+      const newline = text.indexOf("\n");
+      text = newline >= 0 ? text.slice(newline + 1).trimStart() : "";
+      continue;
+    }
+    if (text.startsWith("/*")) {
+      const close = text.indexOf("*/");
+      text = close >= 0 ? text.slice(close + 2).trimStart() : "";
+      continue;
+    }
+    break;
+  }
+  return text.match(/^([A-Za-z]+)/)?.[1]?.toLowerCase() ?? "";
 }
 
 function normalizedMaxRows(maxRows) {

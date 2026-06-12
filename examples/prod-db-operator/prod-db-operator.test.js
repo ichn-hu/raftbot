@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { snapshotExecutionTarget } from "./bot.js";
-import { createDatabaseAdapter } from "./db-adapters.js";
+import { createDatabaseAdapter, readStatementForExecution } from "./db-adapters.js";
 import { createResultResponse } from "./result-renderer.js";
 import { classifySql } from "./sql-utils.js";
 
@@ -60,6 +60,20 @@ test("sqlite adapter enforces read row cap and reports truncation", async () => 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("read cap only wraps subquery-safe select statements", () => {
+  assert.equal(
+    readStatementForExecution("select * from users;", 10),
+    "SELECT * FROM (select * from users) AS raftbot_read_cap LIMIT 11"
+  );
+  assert.equal(
+    readStatementForExecution("/* leading */ with users_cte as (select * from users) select * from users_cte", 5),
+    "SELECT * FROM (/* leading */ with users_cte as (select * from users) select * from users_cte) AS raftbot_read_cap LIMIT 6"
+  );
+  assert.equal(readStatementForExecution("show tables", 10), "show tables");
+  assert.equal(readStatementForExecution("describe users", 10), "describe users");
+  assert.equal(readStatementForExecution("explain select * from users", 10), "explain select * from users");
 });
 
 test("approval requests snapshot immutable execution target fields", () => {

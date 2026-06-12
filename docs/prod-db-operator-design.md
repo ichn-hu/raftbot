@@ -16,7 +16,7 @@ The bot is deterministic. It classifies SQL, presents approval summaries, record
 - Managers are configured at daemon startup. All managers are mentioned in the request thread. Any manager can approve or reject. The requester cannot self-approve. If no manager is configured, write SQL cannot be approved.
 - Default approval surface is the original request thread. `/dm <requestId>` can force DM reminders to all managers.
 - Pending write requests snapshot the execution target at request creation. Later `/config db ...` changes do not retarget already-pending SQL.
-- Read-only queries are hard-capped at the adapter layer by fetching at most `maxRows + 1` rows and returning at most `maxRows` rows.
+- SELECT/WITH read-only queries are hard-capped at the adapter layer by fetching at most `maxRows + 1` rows and returning at most `maxRows` rows. Metadata reads such as `SHOW` or `DESCRIBE` remain read-only but are executed without the subquery wrapper because those statements are not valid inside `SELECT * FROM (...)`.
 - High-risk SQL is allowed after manager approval. The bot marks risk categories in the approval summary and audit log, but does not hard-block them.
 - Driver dependencies are included directly in the repo for the MVP.
 
@@ -179,7 +179,7 @@ Read-only result sets are returned in three tiers:
 - Large results: HTML and CSV attachments.
 - Very large results: paginated HTML/CSV attachments with a configured page size and max-row cap.
 
-If a result exceeds the configured cap, the bot marks it as truncated in the message and attachments. Adapters enforce the cap while reading by requesting at most one sentinel row beyond the configured max; the renderer never receives more than `maxRows` rows per result set.
+If a SELECT/WITH result exceeds the configured cap, the bot marks it as truncated in the message and attachments. Adapters enforce the cap while reading by requesting at most one sentinel row beyond the configured max; the renderer never receives more than `maxRows` rows per result set. Metadata read statements that cannot be used as subqueries are left unwrapped.
 
 ## SQL Classification
 
