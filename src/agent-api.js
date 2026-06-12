@@ -249,7 +249,12 @@ export class AgentApiClient {
     log("agent_api.profile.ok", { agentId, name: body.name, displayName: body.displayName });
     return {
       name: typeof body.name === "string" ? body.name : "",
-      displayName: typeof body.displayName === "string" ? body.displayName : ""
+      displayName: typeof body.displayName === "string" ? body.displayName : "",
+      creator: body.creator && typeof body.creator === "object" ? {
+        name: typeof body.creator.name === "string" ? body.creator.name : "",
+        displayName: typeof body.creator.displayName === "string" ? body.creator.displayName : ""
+      } : null,
+      createdAt: typeof body.createdAt === "string" ? body.createdAt : null
     };
   }
 }

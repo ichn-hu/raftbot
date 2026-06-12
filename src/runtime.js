@@ -306,31 +306,14 @@ export async function startBotDaemon(bots, options) {
       async uploadAttachment(input) {
         return agentApi.uploadAttachment(msg.agentId, input.target ?? event.replyTarget, input);
       },
-      async reply(text, options = {}) {
-        const attachments = Array.isArray(options.attachments) ? options.attachments : [];
-        const uploadedAttachments = [];
-        for (const attachment of attachments) {
-          uploadedAttachments.push(await agentApi.uploadAttachment(
-            msg.agentId,
-            attachment.target ?? options.target ?? event.replyTarget,
-            attachment
-          ));
-        }
-        const attachmentIds = [
-          ...(Array.isArray(options.attachmentIds) ? options.attachmentIds : []),
-          ...uploadedAttachments.map((attachment) => attachment.id)
-        ].filter((id) => typeof id === "string" && id.length > 0);
-        log("ctx.reply", {
-          agentId: msg.agentId,
-          target: options.target ?? event.replyTarget,
-          seenUpToSeq: msg.seq,
-          contentLength: text.length,
-          attachmentCount: attachmentIds.length
+      async reply(message, options = {}) {
+        await sendContextMessage(msg.agentId, options.target ?? event.replyTarget, message, {
+          ...options,
+          seenUpToSeq: msg.seq
         });
-        await agentApi.sendMessage(msg.agentId, options.target ?? event.replyTarget, text, {
-          seenUpToSeq: msg.seq,
-          attachmentIds
-        });
+      },
+      async send(target, message, options = {}) {
+        await sendContextMessage(msg.agentId, target, message, options);
       }
     };
   }
@@ -339,6 +322,11 @@ export async function startBotDaemon(bots, options) {
     const state = stateStore.forAgent(agentId);
     return {
       agentId,
+      agent: {
+        id: agentId,
+        profile: agents.get(agentId)?.profile ?? null,
+        creator: agents.get(agentId)?.profile?.creator ?? null
+      },
       workspace: {
         path: state.workspacePath
       },
@@ -347,8 +335,65 @@ export async function startBotDaemon(bots, options) {
         get: () => agentApi.getAgentProfile(agentId),
         update: (input) => agentApi.updateProfile(agentId, input),
         setAvatar: (input) => agentApi.updateAvatar(agentId, input)
-      }
+      },
+      uploadAttachment(input) {
+        if (!input?.target) throw new Error("uploadAttachment requires input.target outside message handlers");
+        return agentApi.uploadAttachment(agentId, input.target, input);
+      },
+      attachments: {
+        upload: (target, input) => agentApi.uploadAttachment(agentId, target, input)
+      },
+      send: (target, message, options) => sendContextMessage(agentId, target, message, options)
     };
+  }
+
+  async function sendContextMessage(agentId, target, message, options = {}) {
+    const outgoing = normalizeOutgoingMessage(message, options);
+    const attachmentIds = [...outgoing.attachmentIds];
+    for (const attachment of outgoing.attachments) {
+      const uploaded = await agentApi.uploadAttachment(agentId, attachment.target ?? target, attachment);
+      attachmentIds.push(uploaded.id);
+    }
+    log("ctx.send", {
+      agentId,
+      target,
+      seenUpToSeq: options.seenUpToSeq,
+      contentLength: outgoing.text.length,
+      attachmentCount: attachmentIds.length
+    });
+    await agentApi.sendMessage(agentId, target, outgoing.text, {
+      seenUpToSeq: options.seenUpToSeq,
+      attachmentIds
+    });
+  }
+
+  function normalizeOutgoingMessage(message, options = {}) {
+    const optionAttachments = Array.isArray(options.attachments) ? options.attachments : [];
+    const optionAttachmentIds = Array.isArray(options.attachmentIds) ? options.attachmentIds : [];
+    if (typeof message === "string") {
+      return {
+        text: message,
+        attachments: optionAttachments,
+        attachmentIds: optionAttachmentIds.filter((id) => typeof id === "string")
+      };
+    }
+    if (!message || typeof message !== "object") {
+      return {
+        text: String(message ?? ""),
+        attachments: optionAttachments,
+        attachmentIds: optionAttachmentIds.filter((id) => typeof id === "string")
+      };
+    }
+    const text = typeof message.text === "string" ? message.text : typeof message.content === "string" ? message.content : "";
+    const attachments = [
+      ...(Array.isArray(message.attachments) ? message.attachments : []),
+      ...optionAttachments
+    ];
+    const attachmentIds = [
+      ...(Array.isArray(message.attachmentIds) ? message.attachmentIds : []),
+      ...optionAttachmentIds
+    ].filter((id) => typeof id === "string");
+    return { text, attachments, attachmentIds };
   }
 
   function ackDelivery(msg) {

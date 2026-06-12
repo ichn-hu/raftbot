@@ -92,6 +92,11 @@ Handlers receive a `ctx`:
 ```ts
 interface BotContext {
   agentId: string;
+  agent: {
+    id: string;
+    profile: AgentProfile | null;
+    creator: null | { name: string; displayName?: string };
+  };
   profile: {
     get(): Promise<AgentProfile>;
     update(input: {
@@ -121,13 +126,45 @@ interface BotContext {
       bytes: Uint8Array | Buffer;
     }>;
   }): Promise<void>;
+  attachments: {
+    upload(target: string, input: {
+      filename: string;
+      mimeType: string;
+      bytes: Uint8Array | Buffer;
+    }): Promise<Attachment>;
+  };
+  send(target: string, text: string, options?: {
+    attachmentIds?: string[];
+    attachments?: Array<{
+      target?: string;
+      filename: string;
+      mimeType: string;
+      bytes: Uint8Array | Buffer;
+    }>;
+  }): Promise<void>;
   event?: BotMessageEvent;
 }
 ```
 
 Message command contexts additionally include `event`, `command`, `args`, and `reply()`. Lifecycle and scheduled contexts omit message-specific fields.
 
-`ctx.reply()` is command-scoped. If Slock's human-facing freshness guard holds the first send because newer messages arrived, the framework retries the same deterministic reply with the server-returned `seenUpToSeq` and `continueAnyway` semantics instead of surfacing a draft workflow to bot code.
+`ctx.reply()` is command-scoped and replies to the framework-selected default target. `ctx.send(target, ...)` can send to another Slock target, for example a manager DM.
+
+Both methods accept text plus attachment options:
+
+```js
+await ctx.reply("Query result attached.", {
+  attachments: [
+    {
+      filename: "result.csv",
+      mimeType: "text/csv",
+      bytes: Buffer.from(csvText, "utf-8")
+    }
+  ]
+});
+```
+
+The framework uploads attachments first, then sends the message with the uploaded attachment IDs. For compatibility with older bot code, `ctx.reply()` and `ctx.send()` also accept an object shaped like `{ text, attachments, attachmentIds }`. If Slock's human-facing freshness guard holds the first send because newer messages arrived, the framework retries the same deterministic reply with the server-returned `seenUpToSeq` and `continueAnyway` semantics instead of surfacing a draft workflow to bot code.
 
 ## Attachments
 

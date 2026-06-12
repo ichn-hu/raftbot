@@ -22,6 +22,7 @@ Until Slock has native RaftBot runtime registration, a bot daemon can advertise 
 - [技术方案](docs/technical-plan.md)
 - [Framework API](docs/framework-api.md)
 - [Programming Model](docs/programming-model.md)
+- [Production Database Operator Design](docs/prod-db-operator-design.md)
 - [Slock Daemon 协议逆向](docs/slock-api-reversal.md)
 
 ## Examples
