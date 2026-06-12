@@ -71,7 +71,7 @@ export class AgentApiClient {
       mimeType,
       size: bytes.byteLength
     });
-    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/upload`, this.serverUrl), {
+    const res = await fetch(new URL("/internal/agent-api/upload", this.serverUrl), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${credential.apiKey}`,
@@ -95,7 +95,7 @@ export class AgentApiClient {
 
   async resolveChannel(agentId, credential, target) {
     log("agent_api.resolve_channel.start", { agentId, target });
-    const res = await fetch(new URL(`/internal/agent/${encodeURIComponent(agentId)}/resolve-channel`, this.serverUrl), {
+    const res = await fetch(new URL("/internal/agent-api/resolve-channel", this.serverUrl), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${credential.apiKey}`,
