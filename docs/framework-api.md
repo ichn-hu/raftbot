@@ -2,6 +2,61 @@
 
 RaftBot apps should be written against Slock-native framework primitives, not daemon wire messages or internal HTTP paths. The framework owns daemon connection, credential minting, delivery ack, activity, and Slock profile endpoints.
 
+## Bot Definition
+
+A bot package exports a bot definition. The definition declares the model shown to Slock Server and the handlers that run for each server-created Agent instance:
+
+```js
+import { createBot, startBotDaemon } from "raftbot";
+
+const bot = createBot({
+  modelId: "reversibot",
+  runtimeLabel: "Reversibot"
+});
+
+bot.command("help", async (ctx) => {
+  await ctx.reply("Available commands: /help");
+});
+
+bot.command("start", async (ctx) => {
+  await ctx.reply("Started.");
+});
+
+bot.onMessage(async (ctx) => {
+  // Observe every delivered message before command routing.
+});
+
+bot.onStart(async (ctx) => {
+  // Initialize per-Agent resources.
+});
+
+bot.onStop(async (ctx) => {
+  // Release per-Agent resources.
+});
+
+bot.every("1m", async (ctx) => {
+  // Run background work for each running Agent instance.
+});
+
+await startBotDaemon([bot], {
+  serverUrl: process.env.SLOCK_SERVER_URL,
+  apiKey: process.env.SLOCK_DAEMON_API_KEY,
+  runtimeIds: "claude,codex,antigravity,kimi,copilot,cursor,gemini,opencode,pi"
+});
+```
+
+Definition methods:
+
+- `createBot({ modelId, runtimeLabel, ...options })`: create one local bot code package. `modelId` is the dispatch key used when Slock starts an Agent with `config.model`.
+- `bot.model(metadata)`: update model metadata after construction.
+- `bot.command(name, handler)`: register a slash command. Names may be written with or without the leading slash.
+- `bot.onMessage(handler)`: observe delivered messages before slash command routing. Today this hook is best for metrics, lightweight custom parsing, or side effects that should not replace command routing; the framework does not yet expose an explicit `ctx.handled()` escape hatch.
+- `bot.onStart(handler)`: run after the framework receives `agent:start`, resolves the Agent profile, records running state, and reports active status.
+- `bot.onStop(handler)`: run when the server stops this Agent instance, before local jobs are cancelled and running state is removed.
+- `bot.every(interval, handler, options)`: register per-Agent scheduled work. Intervals support `ms`, `s`, `m`, and `h`; jobs run immediately by default unless `options.immediate === false`.
+- `bot.start(options)`: convenience wrapper for starting a daemon with one bot definition.
+- `startBotDaemon(bots, options)`: start one daemon that can expose multiple bot code packages as a model list.
+
 ## Lifecycle
 
 RaftBot separates bot code from bot instances:
@@ -166,6 +221,48 @@ await ctx.reply("Query result attached.", {
 
 The framework uploads attachments first, then sends the message with the uploaded attachment IDs. For compatibility with older bot code, `ctx.reply()` and `ctx.send()` also accept an object shaped like `{ text, attachments, attachmentIds }`. If Slock's human-facing freshness guard holds the first send because newer messages arrived, the framework retries the same deterministic reply with the server-returned `seenUpToSeq` and `continueAnyway` semantics instead of surfacing a draft workflow to bot code.
 
+## Message Event Shape
+
+Command handlers receive a normalized `ctx.event` instead of raw daemon payloads:
+
+```ts
+type SurfaceKind = "channel" | "thread" | "dm";
+
+interface BotMessageEvent {
+  id: string;
+  text: string;
+  commandText: string;
+  command: null | { name: string; args: string[] };
+
+  target: string;
+  replyTarget: string;
+
+  sender: string;
+  mentioned: boolean;
+  mentionedName: string | null;
+  addressed: boolean;
+
+  surface:
+    | { kind: "channel"; target: string; name: string }
+    | {
+        kind: "thread";
+        target: string;
+        threadShortId: string;
+        parent: null | { kind: "channel" | "dm"; name: string };
+      }
+    | { kind: "dm"; target: string; name: string };
+}
+```
+
+Routing semantics:
+
+- Channel messages are routed to `bot.command(...)` only when the bot is addressed by mention, unless `ambientChannelCommands` is enabled.
+- Thread messages are considered addressed, so follow-up slash commands do not need another bot mention.
+- DM messages are considered addressed, so `/help`, `/config show`, and similar commands work directly.
+- `commandText` is the message text with the leading bot mention stripped when applicable.
+- `replyTarget` is the default target for `ctx.reply()`. For a channel top-level message, it is the thread under that message.
+- If a DM message is not a slash command or names an unknown command, the framework replies with an unrecognized-message fallback and invokes the bot's `help` command when available.
+
 ## Attachments
 
 Bots can attach generated artifacts to replies without handling Slock upload routes directly:
@@ -214,3 +311,29 @@ The default implementation stores state in:
 This is local process state. It survives daemon process restart on the same machine and workspace, but it is not a server-side replication mechanism.
 
 `ctx.workspace.path` exposes the workspace path for bot-specific artifacts that do not fit the key-value state API.
+
+## Bot Writer Best Practices
+
+Make the text reply the source of truth. Attachments, profile updates, and rich HTML are useful, but the message body should include the current state, next valid commands, and error reason so both humans and agent players can continue.
+
+Implement `/help` for every bot. The framework uses it as the DM fallback, and it gives users a copyable command list after they forget the exact syntax.
+
+Branch explicitly on `ctx.event.surface.kind`. A channel start command, a thread turn command, and a DM configuration command usually have different safety properties. Reply with a concrete usage message when a command is used on the wrong surface.
+
+Use channel mentions to start workflows, then threads to continue them. A good pattern is `@bot /start ...` in a channel, followed by `/place`, `/approve`, `/status`, or other direct commands inside the created thread.
+
+Keep configuration and secrets in DM. Do not print API keys, database URLs, or unredacted credentials in channel or thread messages. When showing configuration, redact sensitive fields.
+
+Validate before side effects. Parse user input, check sender authorization, check current turn or ownership, and only then update state, run SQL, send reminders, or mutate profiles.
+
+Store durable per-Agent state through `ctx.state`, and namespace keys by bot feature, for example `reversibot.games` or `prodDbOperator.config`. For multi-thread workflows, key individual records by `ctx.event.target` or `ctx.event.replyTarget`.
+
+Design handlers to be idempotent enough for restart and retry windows. The framework handles delivery ack, startup wake messages, freshness retry, and daemon reconnects, but bot code should avoid assuming a perfect one-shot execution model.
+
+Use scheduled jobs for polling or profile synchronization, but add local de-dupe or throttling inside the job. The Clock Bot records the last rendered minute so repeated ticks do not upload the same avatar.
+
+Use generated attachments for inspection-heavy output. HTML boards and query result pages work well when paired with concise text commands in the message body. Set a specific `filename`, `mimeType`, and byte payload for each attachment.
+
+Prefer small, deterministic command surfaces. A bot should expose a few explicit slash commands with predictable replies rather than a broad natural-language parser unless it has strong validation and help output.
+
+Keep long-running operations out of the hot message path where possible. For operations that may take a while, record intent in state, send an immediate status, and finish through a scheduled job or follow-up message.
