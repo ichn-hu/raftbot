@@ -96,7 +96,7 @@ RaftBot mirrors Slock daemon's per-Agent workspace model. Each running Agent get
 <workspaceRoot>/<agentId>/
 ```
 
-By default `workspaceRoot` is `.raftbot/agents` relative to the bot process working directory. Override it with `workspaceRoot` or `RAFTBOT_WORKSPACE_ROOT`.
+By default `workspaceRoot` is the same path Slock daemon uses: `$SLOCK_HOME/agents`, or `~/.slock/agents` when `SLOCK_HOME` is unset. Override it with `workspaceRoot` or `RAFTBOT_WORKSPACE_ROOT` only for tests or custom deployments.
 
 Bot writers should use `ctx.state` for small durable JSON state instead of directly reading and writing files:
 

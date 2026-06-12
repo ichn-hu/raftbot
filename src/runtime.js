@@ -2,6 +2,8 @@ import { DaemonConnection, readyMessage } from "./daemon-connection.js";
 import { AgentApiClient } from "./agent-api.js";
 import { log } from "./logger.js";
 import { JsonStateStore } from "./state-store.js";
+import os from "node:os";
+import path from "node:path";
 
 export function createBot() {
   const commands = new Map();
@@ -427,7 +429,12 @@ function parseRuntimeIds(options) {
 }
 
 function resolveWorkspaceRoot(options) {
-  return options.workspaceRoot || process.env.RAFTBOT_WORKSPACE_ROOT || ".raftbot/agents";
+  return options.workspaceRoot || process.env.RAFTBOT_WORKSPACE_ROOT || path.join(resolveSlockHome(), "agents");
+}
+
+function resolveSlockHome() {
+  const raw = process.env.SLOCK_HOME?.trim();
+  return path.resolve(raw || path.join(os.homedir(), ".slock"));
 }
 
 function parseIntervalMs(interval) {
