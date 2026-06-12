@@ -303,15 +303,33 @@ export async function startBotDaemon(bots, options) {
       event,
       command: parsed?.name ?? null,
       args: parsed?.args ?? [],
-      async reply(text) {
+      async uploadAttachment(input) {
+        return agentApi.uploadAttachment(msg.agentId, input.target ?? event.replyTarget, input);
+      },
+      async reply(text, options = {}) {
+        const attachments = Array.isArray(options.attachments) ? options.attachments : [];
+        const uploadedAttachments = [];
+        for (const attachment of attachments) {
+          uploadedAttachments.push(await agentApi.uploadAttachment(
+            msg.agentId,
+            attachment.target ?? options.target ?? event.replyTarget,
+            attachment
+          ));
+        }
+        const attachmentIds = [
+          ...(Array.isArray(options.attachmentIds) ? options.attachmentIds : []),
+          ...uploadedAttachments.map((attachment) => attachment.id)
+        ].filter((id) => typeof id === "string" && id.length > 0);
         log("ctx.reply", {
           agentId: msg.agentId,
-          target: event.replyTarget,
+          target: options.target ?? event.replyTarget,
           seenUpToSeq: msg.seq,
-          contentLength: text.length
+          contentLength: text.length,
+          attachmentCount: attachmentIds.length
         });
-        await agentApi.sendMessage(msg.agentId, event.replyTarget, text, {
-          seenUpToSeq: msg.seq
+        await agentApi.sendMessage(msg.agentId, options.target ?? event.replyTarget, text, {
+          seenUpToSeq: msg.seq,
+          attachmentIds
         });
       }
     };
