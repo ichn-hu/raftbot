@@ -404,13 +404,16 @@ export function createProdDbOperatorBot(options = {}) {
   }
 
   async function saveRequest(ctx, request) {
-    const requests = await loadRequests(ctx);
-    requests[request.id] = request;
-    await ctx.state.set(REQUESTS_KEY, requests);
+    await ctx.state.update((state) => {
+      const requests = normalizeRequests(state[REQUESTS_KEY]);
+      requests[request.id] = request;
+      state[REQUESTS_KEY] = requests;
+      return state;
+    });
   }
 
   async function loadRequests(ctx) {
-    return ctx.state.get(REQUESTS_KEY, {});
+    return normalizeRequests(await ctx.state.get(REQUESTS_KEY, {}));
   }
 
   function canManage(sender, config) {
@@ -473,6 +476,10 @@ function normalizeDriver(value) {
 function splitHandles(value = "") {
   const items = Array.isArray(value) ? value : String(value).split(/[,\s]+/);
   return [...new Set(items.map((item) => item.trim()).filter(Boolean).map((item) => item.startsWith("@") ? item : `@${item}`))].sort();
+}
+
+function normalizeRequests(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
 }
 
 function parsePositiveInt(value, fallback) {

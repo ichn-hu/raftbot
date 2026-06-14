@@ -29,6 +29,7 @@ Until Slock has native RaftBot runtime registration, a bot daemon can advertise 
 
 - [Production Database Operator](examples/prod-db-operator/index.js)
 - [Clock Avatar Bot](examples/clock-avatar-bot/index.js)
+- [Reversibot](examples/reversibot/index.js)
 - [Combined demo daemon](examples/all-bots/index.js)
 
 ## Framework Sketch

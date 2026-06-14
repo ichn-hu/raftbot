@@ -13,7 +13,7 @@ Behavior:
 - Repeats once per minute for each running Agent identity.
 - Supports `/tz` to show the current timezone.
 - Supports `/settz <timezone>` to change timezone, for example `/settz Asia/Shanghai`.
-- Persists timezone with `ctx.state` under the Agent workspace.
+- Persists timezone with `ctx.state` under `clockAvatarBot.timezone` in the Agent workspace. Existing `timezone` state is still read as a legacy fallback.
 
 Run shape:
 

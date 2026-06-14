@@ -1,6 +1,9 @@
 import { createBot } from "../../src/index.js";
 import { renderClockPng } from "./render-clock.js";
 
+const TIMEZONE_STATE_KEY = "clockAvatarBot.timezone";
+const LEGACY_TIMEZONE_STATE_KEY = "timezone";
+
 export function createClockAvatarBot(options = {}) {
   const defaultTimeZone = options.timeZone || "UTC";
   const lastMinuteByAgent = new Map();
@@ -59,7 +62,8 @@ export function createClockAvatarBot(options = {}) {
       ].join("\n"));
       return;
     }
-    await ctx.state.set("timezone", zone);
+    await ctx.state.set(TIMEZONE_STATE_KEY, zone);
+    await ctx.state.delete(LEGACY_TIMEZONE_STATE_KEY);
     lastMinuteByAgent.delete(ctx.agentId);
     await syncClock(ctx);
     await ctx.reply(`Timezone updated to ${zone}.\nCurrent time: ${formatDescriptionTime(new Date(), zone)}`);
@@ -86,7 +90,9 @@ export function createClockAvatarBot(options = {}) {
   }
 
   async function getTimeZone(ctx) {
-    return ctx.state.get("timezone", defaultTimeZone);
+    const zone = await ctx.state.get(TIMEZONE_STATE_KEY, null);
+    if (zone) return zone;
+    return ctx.state.get(LEGACY_TIMEZONE_STATE_KEY, defaultTimeZone);
   }
 }
 

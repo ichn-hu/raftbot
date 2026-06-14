@@ -20,9 +20,10 @@ export function createReversibot() {
   });
 
   bot.command("help", async (ctx) => {
+    const mention = botMention(ctx);
     await ctx.reply([
       "Reversibot commands:",
-      "@bot /start @playerA @playerB - start a game from a channel message",
+      `${mention} /start @playerA @playerB - start a game from a channel message`,
       "/place d3 - place a disc when it is your turn",
       "/status - show the current board",
       "/resign - resign when it is your turn"
@@ -31,32 +32,36 @@ export function createReversibot() {
 
   bot.command("start", async (ctx) => {
     if (ctx.event.surface.kind !== "channel") {
-      await ctx.reply("Start a new Reversi game from a channel message, e.g. @bot /start @alice @bob.");
+      await ctx.reply(`Start a new Reversi game from a channel message, e.g. ${botMention(ctx)} /start @alice @bob.`);
       return;
     }
     const handles = parseMentionHandles(ctx.event.commandText);
     if (handles.length < 2) {
-      await ctx.reply("Usage: @bot /start @playerA @playerB");
+      await ctx.reply(`Usage: ${botMention(ctx)} /start @playerA @playerB`);
       return;
     }
     if (handles[0] === handles[1]) {
       await ctx.reply("Choose two different players for a Reversi game.");
       return;
     }
-    const games = await loadGames(ctx);
-    if (games[ctx.event.replyTarget]?.status === "active") {
-      await ctx.reply(`There is already an active Reversi game in ${ctx.event.replyTarget}.`);
+    const result = await updateGames(ctx, async (games) => {
+      if (games[ctx.event.replyTarget]?.status === "active") {
+        return { ok: false, message: `There is already an active Reversi game in ${ctx.event.replyTarget}.` };
+      }
+      const game = await createGame({
+        threadTarget: ctx.event.replyTarget,
+        startMessageId: ctx.event.id,
+        black: handles[0],
+        white: handles[1]
+      });
+      games[game.threadTarget] = game;
+      return { ok: true, game };
+    });
+    if (!result.ok) {
+      await ctx.reply(result.message);
       return;
     }
-    const game = await createGame({
-      threadTarget: ctx.event.replyTarget,
-      startMessageId: ctx.event.id,
-      black: handles[0],
-      white: handles[1]
-    });
-    games[game.threadTarget] = game;
-    await saveGames(ctx, games);
-    await sendBoard(ctx, game, "Game started.");
+    await sendBoard(ctx, result.game, "Game started.");
   });
 
   bot.command("status", async (ctx) => {
@@ -66,45 +71,56 @@ export function createReversibot() {
   });
 
   bot.command("place", async (ctx) => {
-    const game = await findThreadGame(ctx);
-    if (!game) return;
-    if (game.status !== "active") {
-      await ctx.reply(`This game is already ${game.status}.`);
+    if (ctx.event.surface.kind !== "thread") {
+      await ctx.reply("Use this command inside a Reversi game thread.");
       return;
     }
-    const expected = currentPlayerHandle(game);
-    if (ctx.event.sender !== expected) {
-      await ctx.reply(`It is ${expected}'s turn. ${ctx.event.sender || "This sender"} cannot place now.`);
-      return;
-    }
-    const result = await handleMove(game, ctx.args[0] ?? "");
+    const result = await updateGames(ctx, async (games) => {
+      const game = getGameForThread(games, ctx.event.target);
+      if (!game) return { ok: false, message: "No Reversi game is active in this thread." };
+      if (game.status !== "active") return { ok: false, message: `This game is already ${game.status}.` };
+
+      const expected = currentPlayerHandle(game);
+      if (ctx.event.sender !== expected) {
+        return { ok: false, message: `It is ${expected}'s turn. ${ctx.event.sender || "This sender"} cannot place now.` };
+      }
+
+      const move = await handleMove(game, ctx.args[0] ?? "");
+      if (!move.ok) return move;
+      games[game.threadTarget] = move.game;
+      return move;
+    });
     if (!result.ok) {
       await ctx.reply(result.message);
       return;
     }
-    const games = await loadGames(ctx);
-    games[game.threadTarget] = result.game;
-    await saveGames(ctx, games);
     await sendBoard(ctx, result.game, result.message);
   });
 
   bot.command("resign", async (ctx) => {
-    const game = await findThreadGame(ctx);
-    if (!game) return;
-    if (game.status !== "active") {
-      await ctx.reply(`This game is already ${game.status}.`);
+    if (ctx.event.surface.kind !== "thread") {
+      await ctx.reply("Use this command inside a Reversi game thread.");
       return;
     }
-    const expected = currentPlayerHandle(game);
-    if (ctx.event.sender !== expected) {
-      await ctx.reply(`Only the current player can resign. It is ${expected}'s turn.`);
+    const result = await updateGames(ctx, async (games) => {
+      const game = getGameForThread(games, ctx.event.target);
+      if (!game) return { ok: false, message: "No Reversi game is active in this thread." };
+      if (game.status !== "active") return { ok: false, message: `This game is already ${game.status}.` };
+
+      const expected = currentPlayerHandle(game);
+      if (ctx.event.sender !== expected) {
+        return { ok: false, message: `Only the current player can resign. It is ${expected}'s turn.` };
+      }
+
+      const resigned = await resignGame(game, ctx.event.sender);
+      games[game.threadTarget] = resigned;
+      return { ok: true, game: resigned, message: `${ctx.event.sender} resigned.` };
+    });
+    if (!result.ok) {
+      await ctx.reply(result.message);
       return;
     }
-    const resigned = await resignGame(game, ctx.event.sender);
-    const games = await loadGames(ctx);
-    games[game.threadTarget] = resigned;
-    await saveGames(ctx, games);
-    await sendBoard(ctx, resigned, `${ctx.event.sender} resigned.`);
+    await sendBoard(ctx, result.game, result.message);
   });
 
   return bot;
@@ -148,15 +164,29 @@ export function createReversibot() {
 }
 
 async function loadGames(ctx) {
-  const games = await ctx.state.get(GAMES_STATE_KEY, {});
-  return games && typeof games === "object" && !Array.isArray(games) ? games : {};
+  return normalizeGames(await ctx.state.get(GAMES_STATE_KEY, {}));
 }
 
-async function saveGames(ctx, games) {
-  await ctx.state.set(GAMES_STATE_KEY, games);
+async function updateGames(ctx, mutator) {
+  let result = null;
+  await ctx.state.update(async (state) => {
+    const games = normalizeGames(state[GAMES_STATE_KEY]);
+    result = await mutator(games);
+    state[GAMES_STATE_KEY] = games;
+    return state;
+  });
+  return result;
+}
+
+function normalizeGames(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
 }
 
 function parseMentionHandles(text) {
   return [...String(text ?? "").matchAll(/@([A-Za-z0-9_.-]+)/g)]
     .map((match) => `@${match[1]}`);
+}
+
+function botMention(ctx) {
+  return ctx.agent.profile?.name ? `@${ctx.agent.profile.name}` : "@bot";
 }
