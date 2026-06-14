@@ -258,6 +258,7 @@ export function createProdDbOperatorBot(options = {}) {
       risks: classification.risks,
       parseError: classification.parseError,
       target: ctx.event.replyTarget,
+      requesterSurface: ctx.event.surface.kind,
       executionTarget: snapshotExecutionTarget(config),
       db: redactConfig(config),
       createdAt: new Date().toISOString()
@@ -290,7 +291,7 @@ export function createProdDbOperatorBot(options = {}) {
       request.decidedAt = new Date().toISOString();
       await saveRequest(ctx, request);
       await writeAudit(ctx, { type: "approval_rejected", request });
-      await ctx.reply(`SQL request ${request.id} rejected by ${ctx.event.sender}.`);
+      await replyAndNotifyOriginal(ctx, request, `SQL request ${request.id} rejected by ${ctx.event.sender}.`);
       return;
     }
 
@@ -313,10 +314,10 @@ export function createProdDbOperatorBot(options = {}) {
       request.execution = execution;
       await saveRequest(ctx, request);
       await writeAudit(ctx, { type: "write_executed", request });
-      await ctx.reply([
+      await replyAndNotifyOriginal(ctx, request, [
         `SQL request ${request.id} approved by ${ctx.event.sender} and committed.`,
         `Statements: ${request.statements.length}`,
-        `Affected rows: ${execution.affectedRows}`
+        `Affected rows: ${formatAffectedRows(execution.affectedRows)}`
       ].join("\n"));
     } catch (err) {
       request.status = "rolled_back_due_to_error";
@@ -324,7 +325,7 @@ export function createProdDbOperatorBot(options = {}) {
       request.failedAt = new Date().toISOString();
       await saveRequest(ctx, request);
       await writeAudit(ctx, { type: "write_rolled_back", request });
-      await ctx.reply([
+      await replyAndNotifyOriginal(ctx, request, [
         `SQL request ${request.id} failed and was rolled back.`,
         "",
         formatSqlError("Write transaction failed", err, executionConfig, { transactionRolledBack: true })
@@ -333,8 +334,45 @@ export function createProdDbOperatorBot(options = {}) {
   }
 
   async function notifyManagers(ctx, request, config, options = {}) {
+    const dmManagers = options.dmManagers ?? (request.requesterSurface === "dm" ? config.managers : []);
+    const shouldDmManagers = options.forceDm || dmManagers.length > 0;
+    if (!options.forceDm) {
+      await ctx.reply(formatRequesterApprovalNotice(request, config, { dmManagers }));
+    }
+    if (shouldDmManagers) {
+      await Promise.all(dmManagers.map((manager) => ctx.send(`dm:${manager}`, [
+        "SQL approval required.",
+        "",
+        formatApprovalSummary(request),
+        "",
+        `Original context: ${request.target}`,
+        `Approve: /approve ${request.id}`,
+        `Reject: /reject ${request.id}`
+      ].join("\n"))));
+    }
+  }
+
+  async function replyAndNotifyOriginal(ctx, request, message) {
+    await ctx.reply(message);
+    if (ctx.event.replyTarget && request.target && ctx.event.replyTarget !== request.target) {
+      await ctx.send(request.target, message);
+    }
+  }
+
+  function formatRequesterApprovalNotice(request, config, options = {}) {
+    const dmManagers = options.dmManagers ?? [];
+    if (request.requesterSurface === "dm") {
+      return [
+        "SQL approval required.",
+        `Managers notified by DM: ${dmManagers.length > 0 ? dmManagers.join(", ") : "none"}`,
+        "",
+        formatApprovalSummary(request),
+        "",
+        "Managers can approve or reject in their DM with this bot."
+      ].join("\n");
+    }
     const managerLine = config.managers.length > 0 ? config.managers.join(" ") : "Managers";
-    const message = [
+    return [
       `${managerLine} SQL approval required.`,
       "",
       formatApprovalSummary(request),
@@ -343,18 +381,6 @@ export function createProdDbOperatorBot(options = {}) {
       `Reject: /reject ${request.id}`,
       `Force DM reminder: /dm ${request.id} @manager [@manager...]`
     ].join("\n");
-    if (!options.forceDm) await ctx.reply(message);
-    if (options.forceDm) {
-      const managers = options.dmManagers ?? [];
-      await Promise.all(managers.map((manager) => ctx.send(`dm:${manager}`, [
-        "SQL approval reminder.",
-        "",
-        formatApprovalSummary(request),
-        "",
-        `Original thread: ${request.target}`,
-        `Approve in the original thread with: /approve ${request.id}`
-      ].join("\n"))));
-    }
   }
 
   async function getAdapter(ctx, config) {
@@ -578,6 +604,11 @@ function formatSqlError(title, err, config, options = {}) {
     lines.push("", "No changes were committed for this failed write transaction.");
   }
   return lines.join("\n");
+}
+
+function formatAffectedRows(value) {
+  const rows = Number(value);
+  return Number.isFinite(rows) ? String(rows) : "unknown";
 }
 
 export function formatSqlParseError(classification, config) {

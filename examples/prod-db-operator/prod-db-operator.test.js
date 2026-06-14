@@ -73,6 +73,104 @@ test("/sql parse errors return an error instead of opening approval", async () =
   }
 });
 
+test("DM-origin write requests DM managers and approval notifies original context", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
+  try {
+    const bot = createProdDbOperatorBot({
+      managers: "@manager",
+      auditLog: path.join(dir, "audit.jsonl")
+    });
+    const stateValues = new Map();
+    const requesterReplies = [];
+    const requesterSends = [];
+    const requesterCtx = createCommandContext({
+      args: [
+        "create table approvals (id integer primary key, name text);",
+        "insert into approvals (name) values ('ok')"
+      ],
+      dir,
+      stateValues,
+      sender: "@requester",
+      replyTarget: "dm:@requester:req1",
+      surfaceKind: "dm",
+      replies: requesterReplies,
+      sends: requesterSends
+    });
+
+    await getCommandHandler(bot, "sql")(requesterCtx);
+
+    assert.equal(requesterReplies.length, 1);
+    assert.match(requesterReplies[0], /Managers notified by DM: @manager/);
+    assert.equal(requesterSends.length, 1);
+    assert.equal(requesterSends[0].target, "dm:@manager");
+    assert.match(requesterSends[0].message, /Approve: \/approve sql_/);
+
+    const requestId = Object.keys(stateValues.get("prodDbOperator.requests"))[0];
+    const request = stateValues.get("prodDbOperator.requests")[requestId];
+    assert.equal(request.target, "dm:@requester:req1");
+    assert.equal(request.requesterSurface, "dm");
+
+    const managerReplies = [];
+    const managerSends = [];
+    const managerCtx = createCommandContext({
+      args: [requestId],
+      dir,
+      stateValues,
+      sender: "@manager",
+      replyTarget: "dm:@manager:approval",
+      surfaceKind: "dm",
+      replies: managerReplies,
+      sends: managerSends
+    });
+
+    await getCommandHandler(bot, "approve")(managerCtx);
+
+    assert.equal(managerReplies.length, 1);
+    assert.match(managerReplies[0], /approved by @manager and committed/);
+    assert.match(managerReplies[0], /Statements: 2/);
+    assert.match(managerReplies[0], /Affected rows: 1/);
+    assert.deepEqual(managerSends, [{
+      target: "dm:@requester:req1",
+      message: managerReplies[0]
+    }]);
+    assert.equal(stateValues.get("prodDbOperator.requests")[requestId].status, "executed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("thread-origin write requests keep manager approval in the original context", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
+  try {
+    const bot = createProdDbOperatorBot({
+      managers: "@manager",
+      auditLog: path.join(dir, "audit.jsonl")
+    });
+    const stateValues = new Map();
+    const replies = [];
+    const sends = [];
+    const ctx = createCommandContext({
+      args: ["create table thread_approvals (id integer primary key)"],
+      dir,
+      stateValues,
+      sender: "@requester",
+      replyTarget: "#raftbot-devs:req1",
+      surfaceKind: "thread",
+      replies,
+      sends
+    });
+
+    await getCommandHandler(bot, "sql")(ctx);
+
+    assert.equal(replies.length, 1);
+    assert.match(replies[0], /@manager SQL approval required/);
+    assert.match(replies[0], /Force DM reminder/);
+    assert.deepEqual(sends, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("sqlite adapter commits successful transaction and rolls back failed one", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "raftbot-prod-db-test-"));
   try {
@@ -250,4 +348,34 @@ function getCommandHandler(bot, name) {
     }
   }
   throw new Error(`Command not found: ${name}`);
+}
+
+function createCommandContext(options) {
+  const replies = options.replies ?? [];
+  const sends = options.sends ?? [];
+  return {
+    args: options.args,
+    agentId: "agent-1",
+    agent: { creator: { name: "creator" } },
+    workspace: { path: options.dir },
+    event: {
+      sender: options.sender,
+      replyTarget: options.replyTarget,
+      surface: { kind: options.surfaceKind }
+    },
+    state: {
+      async get(key, fallback) {
+        return options.stateValues.has(key) ? options.stateValues.get(key) : fallback;
+      },
+      async set(key, value) {
+        options.stateValues.set(key, value);
+      }
+    },
+    async reply(message) {
+      replies.push(message);
+    },
+    async send(target, message) {
+      sends.push({ target, message });
+    }
+  };
 }
