@@ -300,6 +300,15 @@ const zone = await ctx.state.get("timezone", "UTC");
 await ctx.state.set("timezone", "Asia/Shanghai");
 await ctx.state.delete("timezone");
 const snapshot = await ctx.state.all();
+
+// Atomic read-modify-write for multi-key or record updates. The mutator
+// receives the full state object and returns the next state; concurrent
+// updates are serialized, so prefer this over get-then-set.
+await ctx.state.update((state) => {
+  state.games ??= {};
+  state.games[gameId] = game;
+  return state;
+});
 ```
 
 The default implementation stores state in:
