@@ -369,6 +369,14 @@ function createCommandContext(options) {
       },
       async set(key, value) {
         options.stateValues.set(key, value);
+      },
+      async update(mutator) {
+        const current = Object.fromEntries(options.stateValues);
+        const next = (await mutator({ ...current })) ?? current;
+        options.stateValues.clear();
+        for (const [key, value] of Object.entries(next)) {
+          options.stateValues.set(key, value);
+        }
       }
     },
     async reply(message) {
